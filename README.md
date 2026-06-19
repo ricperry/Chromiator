@@ -2,6 +2,15 @@
 
 A browser-based laboratory for exploring the "Threshiator" effect with advanced PNG metadata embedding capabilities. This prototype focuses on fast iteration for posterization workflows with live histograms, per-channel thresholds, and per-band tonal controls across multiple color spaces. The goal is to nail the feel of the core effect in the browser before porting the logic to other hosts such as G'MIC or Krita.
 
+## License
+
+Threshiator is free software licensed under the GNU General Public License,
+version 3 or, at your option, any later version.
+
+Copyright © 2026 Richard Perry.
+
+See [LICENSE](LICENSE) for the complete license terms.
+
 ## Features
 
 ### Core Functionality
