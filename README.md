@@ -1,15 +1,14 @@
-# Threshiator Prototype
+# Threshiator
 
 A browser-based laboratory for exploring the "Threshiator" effect with advanced PNG metadata embedding capabilities. This prototype focuses on fast iteration for posterization workflows with live histograms, per-channel thresholds, and per-band tonal controls across multiple color spaces. The goal is to nail the feel of the core effect in the browser before porting the logic to other hosts such as G'MIC or Krita.
 
-## License
+## Example Output
 
-Threshiator is free software licensed under the GNU General Public License,
-version 3 or, at your option, any later version.
+These examples use [SpectrumBreakpoint.png](SpectrumBreakpoint.png) as the source image and show the same input pushed through different Threshiator settings.
 
-Copyright © 2026 Richard Perry.
-
-See [LICENSE](LICENSE) for the complete license terms.
+| Source                                                                                | Demo 1                                                            | Demo 2                                                            | Demo 3                                                            |
+| ------------------------------------------------------------------------------------- | ----------------------------------------------------------------- | ----------------------------------------------------------------- | ----------------------------------------------------------------- |
+| <img src="SpectrumBreakpoint.png" alt="Spectrum Breakpoint source image" width="220"> | <img src="Demo1.png" alt="Threshiator demo output 1" width="220"> | <img src="Demo2.png" alt="Threshiator demo output 2" width="220"> | <img src="Demo3.png" alt="Threshiator demo output 3" width="220"> |
 
 ## Features
 
@@ -49,7 +48,7 @@ See [LICENSE](LICENSE) for the complete license terms.
 - [Vite](https://vitejs.dev/) + TypeScript for the application scaffolding
 - Canvas 2D rendering for image processing and histograms
 - ESLint + Prettier for linting and formatting
-- Vitest (placeholder) for future unit coverage of the posterize kernel
+- Vitest for focused unit coverage of the posterize kernel
 
 ## Getting Started
 
@@ -108,8 +107,9 @@ PNG presets appear with a 📁 folder icon in the dropdown.
 - `npm run build` – produce a production build in `dist/`
 - `npm run preview` – preview the production build locally
 - `npm run lint` – run ESLint with the TypeScript rule set
+- `npm run typecheck` – run TypeScript without emitting files
 - `npm run format` – apply Prettier formatting
-- `npm run test` – placeholder for future Vitest suites
+- `npm run test` – run Vitest unit tests
 
 ## Architecture
 
@@ -129,15 +129,20 @@ PNG presets appear with a 📁 folder icon in the dropdown.
 
 ## Roadmap Ideas
 
-- Add presets for common posterize looks (flat comic, duotone, etc.)
-- Lock-channel controls to mirror adjustments across RGB simultaneously
-- Band width controls (percentage-based) to complement the current thresholds
-- WebGL shader path for higher-resolution previews and export
-- Export options (full-resolution PNG, LUT)
+See [docs/TODO.md](docs/TODO.md) for active cleanup, feature, performance, and porting tasks.
 
 ## Contributing / Notes
 
-This repo operates as an interactive sketchpad. Changes are documented in
-`HYDRATE.md` under Project Diary and Change Log to keep context for every
-iteration. Pull requests are welcome, but expect rapid refactors as the effect
-firmly takes shape.
+This repo operates as an interactive sketchpad. Durable project context lives in
+[docs/HISTORY.md](docs/HISTORY.md), and current work is tracked in
+[docs/TODO.md](docs/TODO.md). Pull requests are welcome, but expect rapid
+refactors as the effect firmly takes shape.
+
+## License
+
+Threshiator is free software licensed under the GNU General Public License,
+version 3 or, at your option, any later version.
+
+Copyright (C) 2026 Richard Perry.
+
+See [LICENSE](LICENSE) for the complete license terms.

@@ -4,7 +4,7 @@ import {
   applyHsvPosterize,
   rgbToHsv255,
 } from "./effect";
-import { PRESETS } from "./presets";
+import { PRESETS, type PresetEntry } from "./presets";
 import { drawImageToCanvas } from "./util";
 
 const sourceCanvas = document.getElementById(
@@ -402,13 +402,6 @@ const MAX_LEVELS = 32;
 const MIN_SMOOTHING = 0;
 const MAX_SMOOTHING = 10;
 const HIT_TARGET_PX = 6;
-
-// Combined presets object that will include both built-in and PNG presets
-interface PresetEntry {
-  name: string;
-  description: string;
-  settings: ExportSettings;
-}
 
 const allPresets: Record<string, PresetEntry> = {};
 

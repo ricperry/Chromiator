@@ -1,7 +1,7 @@
 export function drawImageToCanvas(
   img: HTMLImageElement,
   canvas: HTMLCanvasElement,
-  ctx: CanvasRenderingContext2D
+  ctx: CanvasRenderingContext2D,
 ) {
   canvas.width = img.naturalWidth || img.width;
   canvas.height = img.naturalHeight || img.height;

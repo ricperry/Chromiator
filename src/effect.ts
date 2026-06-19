@@ -1,7 +1,3 @@
-/**
- * Minimal per-channel posterization (no band widths or hue yet).
- * This is a stub you can extend into full Threshiator logic.
- */
 export type Levels = { R: number; G: number; B: number };
 export type ChannelThresholds = Partial<Record<keyof Levels, number[]>>;
 export type ChannelOutputs = Partial<Record<keyof Levels, number[]>>;
