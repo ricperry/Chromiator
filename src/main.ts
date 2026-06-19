@@ -81,8 +81,11 @@ const channelTitles: Record<UiChannel, HTMLElement | null> = {
 };
 
 export type ColorSpace = "rgb" | "hsv";
-const COLOR_SPACE_STORAGE_KEY = "super-posterize-color-space";
-const ALPHA_STORAGE_KEY = "super-posterize-posterize-alpha";
+const METADATA_KEYWORD = "Threshiator";
+const LEGACY_METADATA_KEYWORD = "SuperPosterize";
+const COLOR_SPACE_STORAGE_KEY = "threshiator-color-space";
+const ALPHA_STORAGE_KEY = "threshiator-posterize-alpha";
+const SMOOTHING_STORAGE_KEY = "threshiator-smoothing";
 
 export type ChannelSettings = {
   levels: number;
@@ -93,17 +96,18 @@ export type ChannelSettings = {
 export type ExportSettings = {
   version: number;
   colorSpace?: ColorSpace;
+  smoothing?: number;
   lockChannels: boolean;
   posterizeAlpha?: boolean;
   alpha?: ChannelSettings;
   channels: Record<Channel, ChannelSettings>;
 };
 
-const levelLabels: Record<UiChannel, HTMLElement | null> = {
-  red: document.getElementById("redLevelsValue"),
-  green: document.getElementById("greenLevelsValue"),
-  blue: document.getElementById("blueLevelsValue"),
-  alpha: document.getElementById("alphaLevelsValue"),
+const levelLabels: Record<UiChannel, HTMLInputElement | null> = {
+  red: document.getElementById("redLevelsValue") as HTMLInputElement | null,
+  green: document.getElementById("greenLevelsValue") as HTMLInputElement | null,
+  blue: document.getElementById("blueLevelsValue") as HTMLInputElement | null,
+  alpha: document.getElementById("alphaLevelsValue") as HTMLInputElement | null,
 };
 
 const bandControlContainers: Record<UiChannel, HTMLElement | null> = {
@@ -116,9 +120,21 @@ const bandControlContainers: Record<UiChannel, HTMLElement | null> = {
 const lockToggle = document.getElementById(
   "lockChannelsToggle",
 ) as HTMLInputElement | null;
+const syncChannelsLabel = document.getElementById(
+  "syncChannelsLabel",
+) as HTMLSpanElement | null;
+const hueModeWarning = document.getElementById(
+  "hueModeWarning",
+) as HTMLElement | null;
 const colorSpaceSelect = document.getElementById(
   "colorSpaceSelect",
 ) as HTMLSelectElement | null;
+const smoothingInput = document.getElementById(
+  "smoothingInput",
+) as HTMLInputElement | null;
+const smoothingValue = document.getElementById(
+  "smoothingValue",
+) as HTMLInputElement | null;
 const posterizeAlphaToggle = document.getElementById(
   "posterizeAlphaToggle",
 ) as HTMLInputElement | null;
@@ -143,6 +159,7 @@ const presetDescription = document.querySelector(
 let lockChannelsEnabled = false;
 let activeColorSpace: ColorSpace = "rgb";
 let posterizeAlphaEnabled = false;
+let smoothingAmount = 0;
 
 function channelLabelFor(channel: UiChannel, colorSpace: ColorSpace): string {
   if (channel === "alpha") return "Alpha Channel";
@@ -164,27 +181,86 @@ function channelLabelFor(channel: UiChannel, colorSpace: ColorSpace): string {
   )[channel as Channel];
 }
 
+function syncGroupForColorSpace(colorSpace: ColorSpace): Channel[] {
+  return colorSpace === "hsv" ? ["green", "blue"] : COLOR_CHANNELS;
+}
+
+function syncBaseChannelForColorSpace(colorSpace: ColorSpace): Channel {
+  return colorSpace === "hsv" ? "green" : "red";
+}
+
+function isSyncableChannel(channel: UiChannel): channel is Channel {
+  return (
+    channel !== "alpha" &&
+    syncGroupForColorSpace(activeColorSpace).includes(channel)
+  );
+}
+
+function isVisibleWhenSynced(channel: UiChannel): boolean {
+  if (channel === "alpha") return posterizeAlphaEnabled;
+  if (!lockChannelsEnabled) return true;
+  if (activeColorSpace === "hsv") {
+    return channel === "red" || channel === "green";
+  }
+  return channel === "red";
+}
+
 function syncedChannelLabel(colorSpace: ColorSpace): string {
-  return colorSpace === "hsv" ? "HSV" : "RGB";
+  return colorSpace === "hsv" ? "Saturation / Value" : "RGB";
+}
+
+function usesHueDegreeControls(channel: UiChannel): boolean {
+  return activeColorSpace === "hsv" && channel === "red";
+}
+
+function rawToControlValue(channel: UiChannel, value: number): number {
+  if (!usesHueDegreeControls(channel)) return Math.round(value);
+  return Math.round((Math.max(0, Math.min(255, value)) / 255) * 360);
+}
+
+function controlToRawValue(channel: UiChannel, value: number): number {
+  if (!usesHueDegreeControls(channel)) return Math.round(value);
+  return Math.round((Math.max(0, Math.min(360, value)) / 360) * 255);
+}
+
+function updateModeLabels() {
+  if (syncChannelsLabel) {
+    syncChannelsLabel.textContent =
+      activeColorSpace === "hsv" ? "Sync S/V" : "Sync RGB";
+  }
+  if (hueModeWarning) {
+    hueModeWarning.hidden = activeColorSpace !== "hsv";
+  }
 }
 
 function applyChannelTitles() {
-  if (lockChannelsEnabled) {
+  if (lockChannelsEnabled && activeColorSpace === "rgb") {
     channelTitles.red?.classList.add("synced");
     if (channelTitles.red)
-      channelTitles.red.textContent = syncedChannelLabel(activeColorSpace);
+      channelTitles.red.textContent = syncedChannelLabel("rgb");
   } else {
     channelTitles.red?.classList.remove("synced");
     if (channelTitles.red)
       channelTitles.red.textContent = channelLabelFor("red", activeColorSpace);
   }
 
-  if (channelTitles.green)
-    channelTitles.green.textContent = channelLabelFor("green", activeColorSpace);
+  if (channelTitles.green) {
+    channelTitles.green.classList.toggle(
+      "synced",
+      lockChannelsEnabled && activeColorSpace === "hsv",
+    );
+    channelTitles.green.textContent =
+      lockChannelsEnabled && activeColorSpace === "hsv"
+        ? syncedChannelLabel("hsv")
+        : channelLabelFor("green", activeColorSpace);
+  }
   if (channelTitles.blue)
     channelTitles.blue.textContent = channelLabelFor("blue", activeColorSpace);
   if (channelTitles.alpha)
-    channelTitles.alpha.textContent = channelLabelFor("alpha", activeColorSpace);
+    channelTitles.alpha.textContent = channelLabelFor(
+      "alpha",
+      activeColorSpace,
+    );
 }
 
 function setColorSpace(
@@ -197,7 +273,11 @@ function setColorSpace(
   activeColorSpace = next;
   histogramCache = null;
   if (colorSpaceSelect) colorSpaceSelect.value = next;
+  updateModeLabels();
   applyChannelTitles();
+  if (lockChannelsEnabled) {
+    synchronizeChannels(syncBaseChannelForColorSpace(activeColorSpace));
+  }
   if (saveToStorage) {
     localStorage.setItem(COLOR_SPACE_STORAGE_KEY, next);
   }
@@ -208,23 +288,119 @@ function setColorSpace(
   }
 }
 
+function sanitizeSmoothing(value: unknown): number {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return 0;
+  return Math.max(MIN_SMOOTHING, Math.min(MAX_SMOOTHING, Math.round(numeric)));
+}
+
+function syncSmoothingUi() {
+  const value = smoothingAmount.toString();
+  if (smoothingInput && smoothingInput.value !== value) {
+    smoothingInput.value = value;
+  }
+  if (smoothingValue) {
+    smoothingValue.value = value;
+  }
+}
+
+function commitNumberInputOnEnter(input: HTMLInputElement, commit: () => void) {
+  input.addEventListener("keydown", (event) => {
+    if (event.key !== "Enter") return;
+    event.preventDefault();
+    commit();
+  });
+}
+
+function setSmoothingAmount(
+  next: number,
+  options: { saveToStorage?: boolean; rerender?: boolean } = {},
+) {
+  const clamped = sanitizeSmoothing(next);
+  const saveToStorage = options.saveToStorage ?? true;
+  const rerender = options.rerender ?? true;
+  if (smoothingAmount === clamped) {
+    syncSmoothingUi();
+    return;
+  }
+
+  smoothingAmount = clamped;
+  preprocessedImageCache = null;
+  histogramCache = null;
+  syncSmoothingUi();
+
+  if (saveToStorage) {
+    localStorage.setItem(SMOOTHING_STORAGE_KEY, clamped.toString());
+  }
+  if (rerender) {
+    updateAllHistograms();
+    renderPosterized();
+  }
+}
+
+function setComparisonReveal(value: number) {
+  const clampedValue = Math.min(100, Math.max(0, value));
+  comparisonStage?.style.setProperty("--preview-reveal", `${clampedValue}%`);
+  if (comparisonSlider) {
+    comparisonSlider.value = Math.round(clampedValue).toString();
+  }
+}
+
 if (comparisonStage && comparisonSlider) {
-  const setReveal = (value: number) => {
-    const clampedValue = Math.min(100, Math.max(0, value));
-    comparisonStage.style.setProperty("--preview-reveal", `${clampedValue}%`);
+  let isDraggingComparison = false;
+
+  const revealFromPointer = (event: PointerEvent) => {
+    const rect = comparisonStage.getBoundingClientRect();
+    if (rect.width <= 0) return;
+    const percent = ((event.clientX - rect.left) / rect.width) * 100;
+    setComparisonReveal(percent);
   };
 
   comparisonSlider.addEventListener("input", (event) => {
     const newValue = Number((event.target as HTMLInputElement).value);
-    setReveal(newValue);
+    setComparisonReveal(newValue);
   });
 
-  setReveal(Number(comparisonSlider.value));
+  comparisonStage.addEventListener("pointerdown", (event) => {
+    isDraggingComparison = true;
+    comparisonStage.setPointerCapture(event.pointerId);
+    revealFromPointer(event);
+    event.preventDefault();
+  });
+
+  comparisonStage.addEventListener("pointermove", (event) => {
+    if (!isDraggingComparison) return;
+    revealFromPointer(event);
+    event.preventDefault();
+  });
+
+  const stopComparisonDrag = (event: PointerEvent) => {
+    if (!isDraggingComparison) return;
+    isDraggingComparison = false;
+    if (comparisonStage.hasPointerCapture(event.pointerId)) {
+      comparisonStage.releasePointerCapture(event.pointerId);
+    }
+    event.preventDefault();
+  };
+
+  comparisonStage.addEventListener("pointerup", stopComparisonDrag);
+  comparisonStage.addEventListener("pointercancel", stopComparisonDrag);
+
+  setComparisonReveal(Number(comparisonSlider.value));
+}
+
+if (comparisonStage && "ResizeObserver" in window) {
+  const previewResizeObserver = new ResizeObserver(() => {
+    schedulePreviewResize();
+  });
+  previewResizeObserver.observe(comparisonStage);
 }
 
 const DEFAULT_IMAGE = new URL("../test.png", import.meta.url).href;
 const MIN_LEVELS = 2;
 const MAX_LEVELS = 32;
+const MIN_SMOOTHING = 0;
+const MAX_SMOOTHING = 10;
 const HIT_TARGET_PX = 6;
 
 // Combined presets object that will include both built-in and PNG presets
@@ -246,7 +422,7 @@ async function loadSinglePngPreset(fileName: string): Promise<boolean> {
 
       // Check if this is a valid PNG with metadata
       try {
-        const metadata = extractMetadataFromPng(uint8Array, "SuperPosterize");
+        const metadata = extractSettingsMetadataFromPng(uint8Array);
 
         if (metadata) {
           const preset = JSON.parse(metadata) as ExportSettings;
@@ -263,7 +439,7 @@ async function loadSinglePngPreset(fileName: string): Promise<boolean> {
           console.log(`✅ Loaded PNG preset: ${presetName} (${fileName})`);
           return true;
         } else {
-          console.log(`⚠️ No SuperPosterize metadata found in ${fileName}`);
+          console.log(`⚠️ No Threshiator metadata found in ${fileName}`);
           return false;
         }
       } catch (pngError) {
@@ -415,25 +591,124 @@ const channelOutputs: Record<UiChannel, number[]> = {
   alpha: [],
 };
 
+let fullResolutionImageData: ImageData | null = null;
 let originalImageData: ImageData | null = null;
 let originalImageRevision = 0;
+let previewScale = 1;
+let previewResizeFrame: number | null = null;
+
+type PreprocessedImageCache = {
+  revision: number;
+  smoothingRadius: number;
+  imageData: ImageData;
+};
 
 type HistogramCache = {
   revision: number;
   colorSpace: ColorSpace;
+  smoothingRadius: number;
   perChannel: Record<Channel, Uint32Array>;
   combined: Uint32Array;
   alpha: Uint32Array;
 };
 
+let preprocessedImageCache: PreprocessedImageCache | null = null;
 let histogramCache: HistogramCache | null = null;
 
-function getHistogramCache(): HistogramCache | null {
+function createGaussianKernel(radius: number): Float32Array {
+  const sigma = Math.max(0.5, radius);
+  const kernelRadius = Math.ceil(sigma * 3);
+  const kernel = new Float32Array(kernelRadius * 2 + 1);
+  const divisor = 2 * sigma * sigma;
+  let total = 0;
+
+  for (let i = -kernelRadius; i <= kernelRadius; i += 1) {
+    const value = Math.exp(-(i * i) / divisor);
+    kernel[i + kernelRadius] = value;
+    total += value;
+  }
+
+  for (let i = 0; i < kernel.length; i += 1) {
+    kernel[i] /= total;
+  }
+
+  return kernel;
+}
+
+function applyGaussianBlur(imageData: ImageData, radius: number): ImageData {
+  if (radius <= 0) return imageData;
+
+  const { width, height, data } = imageData;
+  const kernel = createGaussianKernel(radius);
+  const kernelRadius = Math.floor(kernel.length / 2);
+  const horizontal = new Float32Array(data.length);
+  const output = new Uint8ClampedArray(data.length);
+
+  for (let y = 0; y < height; y += 1) {
+    const rowOffset = y * width * 4;
+    for (let x = 0; x < width; x += 1) {
+      const target = rowOffset + x * 4;
+      for (let channel = 0; channel < 4; channel += 1) {
+        let sum = 0;
+        for (let k = -kernelRadius; k <= kernelRadius; k += 1) {
+          const sampleX = Math.max(0, Math.min(width - 1, x + k));
+          sum +=
+            data[rowOffset + sampleX * 4 + channel] * kernel[k + kernelRadius];
+        }
+        horizontal[target + channel] = sum;
+      }
+    }
+  }
+
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      const target = (y * width + x) * 4;
+      for (let channel = 0; channel < 4; channel += 1) {
+        let sum = 0;
+        for (let k = -kernelRadius; k <= kernelRadius; k += 1) {
+          const sampleY = Math.max(0, Math.min(height - 1, y + k));
+          sum +=
+            horizontal[(sampleY * width + x) * 4 + channel] *
+            kernel[k + kernelRadius];
+        }
+        output[target + channel] = Math.round(sum);
+      }
+    }
+  }
+
+  return new ImageData(output, width, height);
+}
+
+function getPreprocessedImageData(): ImageData | null {
   if (!originalImageData) return null;
+  const smoothingRadius = smoothingAmount * previewScale;
+  if (smoothingRadius <= 0) return originalImageData;
+
+  if (
+    preprocessedImageCache &&
+    preprocessedImageCache.revision === originalImageRevision &&
+    preprocessedImageCache.smoothingRadius === smoothingRadius
+  ) {
+    return preprocessedImageCache.imageData;
+  }
+
+  const imageData = applyGaussianBlur(originalImageData, smoothingRadius);
+  preprocessedImageCache = {
+    revision: originalImageRevision,
+    smoothingRadius,
+    imageData,
+  };
+  return imageData;
+}
+
+function getHistogramCache(): HistogramCache | null {
+  const histogramSource = getPreprocessedImageData();
+  if (!histogramSource) return null;
   if (
     histogramCache &&
     histogramCache.revision === originalImageRevision &&
-    histogramCache.colorSpace === activeColorSpace
+    histogramCache.colorSpace === activeColorSpace &&
+    histogramCache.smoothingRadius === smoothingAmount * previewScale
   ) {
     return histogramCache;
   }
@@ -445,7 +720,7 @@ function getHistogramCache(): HistogramCache | null {
   };
   const combined = new Uint32Array(256);
   const alpha = new Uint32Array(256);
-  const data = originalImageData.data;
+  const data = histogramSource.data;
 
   if (activeColorSpace === "hsv") {
     for (let i = 0; i < data.length; i += 4) {
@@ -453,7 +728,6 @@ function getHistogramCache(): HistogramCache | null {
       perChannel.red[h] += 1;
       perChannel.green[s] += 1;
       perChannel.blue[v] += 1;
-      combined[h] += 1;
       combined[s] += 1;
       combined[v] += 1;
       alpha[data[i + 3]] += 1;
@@ -476,6 +750,7 @@ function getHistogramCache(): HistogramCache | null {
   histogramCache = {
     revision: originalImageRevision,
     colorSpace: activeColorSpace,
+    smoothingRadius: smoothingAmount * previewScale,
     perChannel,
     combined,
     alpha,
@@ -517,12 +792,13 @@ function normalizeChannelState(channel: UiChannel) {
 }
 
 function syncOtherChannelsFrom(source: Channel) {
+  if (!isSyncableChannel(source)) return;
   normalizeChannelState(source);
   const level = channelLevels[source];
   const thresholds = [...channelThresholds[source]];
   const outputs = [...channelOutputs[source]];
 
-  COLOR_CHANNELS.forEach((channel) => {
+  syncGroupForColorSpace(activeColorSpace).forEach((channel) => {
     if (channel === source) return;
     channelLevels[channel] = level;
     channelThresholds[channel] = [...thresholds];
@@ -539,13 +815,10 @@ function applyLockStateToUI() {
   document.querySelectorAll<HTMLElement>(".histogram").forEach((panel) => {
     const channel = panel.dataset.channel as UiChannel | undefined;
     if (!channel) return;
-    const hide =
-      channel === "alpha"
-        ? !posterizeAlphaEnabled
-        : lockChannelsEnabled && channel !== "red";
-    panel.classList.toggle("hidden", hide);
+    panel.classList.toggle("hidden", !isVisibleWhenSynced(channel));
   });
 
+  updateModeLabels();
   applyChannelTitles();
 }
 
@@ -555,7 +828,7 @@ function toggleLockChannels(enabled: boolean) {
     lockToggle.checked = enabled;
   }
   if (lockChannelsEnabled) {
-    synchronizeChannels("red");
+    synchronizeChannels(syncBaseChannelForColorSpace(activeColorSpace));
   }
   applyLockStateToUI();
   renderAllBandControls();
@@ -631,8 +904,9 @@ function buildSettingsPayload(): ExportSettings {
     blue: collectChannelSettings("blue"),
   };
   const payload: ExportSettings = {
-    version: 3,
+    version: 4,
     colorSpace: activeColorSpace,
+    smoothing: smoothingAmount,
     lockChannels: lockChannelsEnabled,
     posterizeAlpha: posterizeAlphaEnabled,
     channels,
@@ -785,6 +1059,13 @@ function extractMetadataFromPng(
   return null;
 }
 
+function extractSettingsMetadataFromPng(pngData: Uint8Array): string | null {
+  return (
+    extractMetadataFromPng(pngData, METADATA_KEYWORD) ??
+    extractMetadataFromPng(pngData, LEGACY_METADATA_KEYWORD)
+  );
+}
+
 function calculateCRC32(data: Uint8Array): number {
   const crcTable = new Array(256);
   for (let i = 0; i < 256; i++) {
@@ -803,26 +1084,39 @@ function calculateCRC32(data: Uint8Array): number {
 }
 
 async function saveProcessedImage() {
-  if (!outputCanvas) {
-    alert("No processed image to save!");
+  if (!fullResolutionImageData) {
+    alert("No image to save!");
     return;
   }
 
   const fileName = prompt(
     "Enter a filename for the image:",
-    "posterized_image",
+    "threshiator_image",
   );
   if (fileName === null) return;
 
-  const sanitizedFileName = fileName.trim() || "posterized_image";
+  const sanitizedFileName = fileName.trim() || "threshiator_image";
 
   try {
     const settings = buildSettingsPayload();
     const settingsJson = JSON.stringify(settings);
+    const saveSource =
+      smoothingAmount > 0
+        ? applyGaussianBlur(fullResolutionImageData, smoothingAmount)
+        : fullResolutionImageData;
+    const saveImageData = posterizeImageData(saveSource);
+    const saveCanvas = document.createElement("canvas");
+    saveCanvas.width = saveImageData.width;
+    saveCanvas.height = saveImageData.height;
+    const saveCtx = saveCanvas.getContext("2d");
+    if (!saveCtx) {
+      throw new Error("Failed to create export canvas");
+    }
+    saveCtx.putImageData(saveImageData, 0, 0);
 
     // Get PNG data from canvas
     const originalBlob = await new Promise<Blob>((resolve, reject) => {
-      outputCanvas.toBlob(
+      saveCanvas.toBlob(
         (blob) => {
           if (blob) {
             resolve(blob);
@@ -841,7 +1135,7 @@ async function saveProcessedImage() {
     // Insert tEXt chunk with metadata
     const modifiedPngData = embedMetadataInPng(
       uint8Array,
-      "SuperPosterize",
+      METADATA_KEYWORD,
       settingsJson,
     );
 
@@ -894,9 +1188,9 @@ async function handleSettingsFile(file: File) {
       const arrayBuffer = await file.arrayBuffer();
       const uint8Array = new Uint8Array(arrayBuffer);
 
-      const metadata = extractMetadataFromPng(uint8Array, "SuperPosterize");
+      const metadata = extractSettingsMetadataFromPng(uint8Array);
       if (!metadata) {
-        throw new Error("No SuperPosterize settings found in this PNG file");
+        throw new Error("No Threshiator settings found in this PNG file");
       }
 
       const parsed = JSON.parse(metadata) as ExportSettings;
@@ -927,7 +1221,7 @@ function downloadSettings() {
   const url = URL.createObjectURL(blob);
   const link = document.createElement("a");
   link.href = url;
-  link.download = "SuperPosterSettings.json";
+  link.download = "ThreshiatorSettings.json";
   document.body.appendChild(link);
   link.click();
   document.body.removeChild(link);
@@ -936,10 +1230,17 @@ function downloadSettings() {
 
 function applySettings(settings: ExportSettings) {
   if (settings.colorSpace === "hsv" || settings.colorSpace === "rgb") {
-    setColorSpace(settings.colorSpace, { saveToStorage: false, rerender: false });
+    setColorSpace(settings.colorSpace, {
+      saveToStorage: false,
+      rerender: false,
+    });
   } else {
     setColorSpace("rgb", { saveToStorage: false, rerender: false });
   }
+  setSmoothingAmount(sanitizeSmoothing(settings.smoothing ?? 0), {
+    saveToStorage: false,
+    rerender: false,
+  });
 
   toggleLockChannels(false);
 
@@ -965,10 +1266,16 @@ function applySettings(settings: ExportSettings) {
     const alphaConfig = settings.alpha;
     const level = Math.max(
       MIN_LEVELS,
-      Math.min(MAX_LEVELS, Math.floor(alphaConfig?.levels ?? channelLevels.alpha)),
+      Math.min(
+        MAX_LEVELS,
+        Math.floor(alphaConfig?.levels ?? channelLevels.alpha),
+      ),
     );
     channelLevels.alpha = level;
-    channelThresholds.alpha = sanitizeThresholds(alphaConfig?.thresholds, level);
+    channelThresholds.alpha = sanitizeThresholds(
+      alphaConfig?.thresholds,
+      level,
+    );
     channelOutputs.alpha = sanitizeOutputs(alphaConfig?.outputs, level);
     syncChannelLabel("alpha", level);
   }
@@ -1033,18 +1340,22 @@ function ensureChannelOutputs(channel: UiChannel) {
  */
 function setBandOutput(channel: UiChannel, index: number, value: number) {
   const outputs = channelOutputs[channel];
-  if (!outputs || index < 0 || index >= outputs.length) return;
+  if (!outputs || index < 0 || index >= outputs.length) return null;
   const clamped = Math.max(0, Math.min(255, Math.round(value)));
   outputs[index] = clamped;
-  if (lockChannelsEnabled && channel !== "alpha") {
+  if (lockChannelsEnabled && isSyncableChannel(channel)) {
     syncOtherChannelsFrom(channel as Channel);
+    updateAllHistograms();
+  } else {
+    updateChannelHistogram(channel);
   }
   renderPosterized();
+  return clamped;
 }
 
 /**
- * Render the slider stack for a channel. Each slider feeds back into the
- * output store and triggers a live posterized redraw.
+ * Render explicit threshold and output controls for a channel. The histogram
+ * canvas remains draggable, but these rows make every editable value visible.
  */
 function renderBandControls(channel: UiChannel) {
   const container = bandControlContainers[channel];
@@ -1052,46 +1363,163 @@ function renderBandControls(channel: UiChannel) {
 
   ensureChannelOutputs(channel);
 
+  const thresholds = channelThresholds[channel];
   const outputs = channelOutputs[channel];
 
   container.innerHTML = "";
 
-  outputs.forEach((value, index) => {
-    const control = document.createElement("div");
-    control.className = "band-control";
+  const createTitle = (text: string) => {
+    const title = document.createElement("div");
+    title.className = "control-section-title";
+    title.textContent = text;
+    return title;
+  };
+
+  const createValueRow = (
+    labelText: string,
+    value: number,
+    min: number,
+    max: number,
+    applyValue: (next: number, rerenderControls: boolean) => number | null,
+  ) => {
+    const row = document.createElement("div");
+    row.className = "control-row";
 
     const label = document.createElement("span");
-    label.className = "band-label";
-    label.textContent = `Band ${index + 1}`;
+    label.className = "control-label";
+    label.textContent = labelText;
 
     const slider = document.createElement("input");
     slider.type = "range";
-    slider.min = "0";
-    slider.max = "255";
-    slider.value = value.toString();
+    const displayValue = rawToControlValue(channel, value);
+    const displayMin = rawToControlValue(channel, min);
+    const displayMax = rawToControlValue(channel, max);
+
+    slider.min = displayMin.toString();
+    slider.max = displayMax.toString();
+    slider.value = displayValue.toString();
     slider.step = "1";
-    slider.className = "band-slider";
 
-    const valueDisplay = document.createElement("span");
-    valueDisplay.className = "band-output-value";
-    valueDisplay.textContent = value.toString();
+    const number = document.createElement("input");
+    number.type = "number";
+    number.min = displayMin.toString();
+    number.max = displayMax.toString();
+    number.value = displayValue.toString();
+    number.step = "1";
 
-    slider.addEventListener("input", () => {
-      const next = Number(slider.value);
-      valueDisplay.textContent = next.toString();
-      setBandOutput(channel, index, next);
+    const syncInputs = (
+      next: number,
+      options: { syncNumber?: boolean } = {},
+    ) => {
+      slider.value = next.toString();
+      if (options.syncNumber ?? true) {
+        number.value = next.toString();
+      }
+    };
+
+    const clampDisplayValue = (next: number) =>
+      Math.max(displayMin, Math.min(displayMax, Math.round(next)));
+
+    const applyDisplayValue = (
+      next: number,
+      options: { rerenderControls: boolean; syncNumber: boolean },
+    ) => {
+      const displayNext = clampDisplayValue(next);
+      const applied = applyValue(
+        controlToRawValue(channel, displayNext),
+        options.rerenderControls,
+      );
+      if (applied === null) return;
+
+      const nextDisplay = usesHueDegreeControls(channel)
+        ? displayNext
+        : rawToControlValue(channel, applied);
+      syncInputs(nextDisplay, { syncNumber: options.syncNumber });
+    };
+
+    const applyFrom = (
+      source: HTMLInputElement,
+      options: { rerenderControls: boolean; syncNumber: boolean },
+    ) => {
+      if (source.value === "") return;
+      const raw = Number(source.value);
+      if (!Number.isFinite(raw)) return;
+      applyDisplayValue(raw, options);
+    };
+
+    slider.addEventListener("input", () =>
+      applyFrom(slider, { rerenderControls: false, syncNumber: true }),
+    );
+    slider.addEventListener("change", () =>
+      applyFrom(slider, { rerenderControls: true, syncNumber: true }),
+    );
+    number.addEventListener("change", () =>
+      applyFrom(number, { rerenderControls: false, syncNumber: true }),
+    );
+    commitNumberInputOnEnter(number, () =>
+      applyFrom(number, { rerenderControls: false, syncNumber: true }),
+    );
+
+    row.appendChild(label);
+    row.appendChild(slider);
+    row.appendChild(number);
+    return row;
+  };
+
+  if (thresholds.length > 0) {
+    const thresholdPanel = document.createElement("div");
+    thresholdPanel.className = "threshold-panel";
+    thresholdPanel.appendChild(
+      createTitle(
+        usesHueDegreeControls(channel) ? "Thresholds (deg)" : "Thresholds",
+      ),
+    );
+
+    thresholds.forEach((value, index) => {
+      const minValue = index === 0 ? 1 : thresholds[index - 1] + 1;
+      const maxValue =
+        index === thresholds.length - 1 ? 254 : thresholds[index + 1] - 1;
+
+      thresholdPanel.appendChild(
+        createValueRow(
+          `T${index + 1}`,
+          value,
+          minValue,
+          maxValue,
+          (next, rerenderControls) =>
+            setChannelThreshold(channel, index, next, { rerenderControls }),
+        ),
+      );
     });
 
-    control.appendChild(label);
-    control.appendChild(slider);
-    control.appendChild(valueDisplay);
-    container.appendChild(control);
+    container.appendChild(thresholdPanel);
+  }
+
+  const outputPanel = document.createElement("div");
+  outputPanel.className = "output-panel";
+  outputPanel.appendChild(
+    createTitle(usesHueDegreeControls(channel) ? "Outputs (deg)" : "Outputs"),
+  );
+
+  outputs.forEach((value, index) => {
+    outputPanel.appendChild(
+      createValueRow(`B${index + 1}`, value, 0, 255, (next) =>
+        setBandOutput(channel, index, next),
+      ),
+    );
   });
+
+  container.appendChild(outputPanel);
 }
 
 function renderAllBandControls() {
   if (lockChannelsEnabled) {
-    renderBandControls("red");
+    if (activeColorSpace === "hsv") {
+      renderBandControls("red");
+      renderBandControls("green");
+    } else {
+      renderBandControls("red");
+    }
   } else {
     COLOR_CHANNELS.forEach((channel) => {
       renderBandControls(channel);
@@ -1103,6 +1531,52 @@ function renderAllBandControls() {
   } else if (bandControlContainers.alpha) {
     bandControlContainers.alpha.innerHTML = "";
   }
+}
+
+function drawAdditiveRgbHistogram(
+  ctx: CanvasRenderingContext2D,
+  canvas: HTMLCanvasElement,
+  perChannel: Record<Channel, Uint32Array>,
+) {
+  const channelColors: Record<Channel, string> = {
+    red: "#ff0000",
+    green: "#00ff00",
+    blue: "#0000ff",
+  };
+  const canvasWidth = canvas.width;
+  const canvasHeight = canvas.height;
+  let max = 0;
+  COLOR_CHANNELS.forEach((channel) => {
+    perChannel[channel].forEach((value) => {
+      if (value > max) max = value;
+    });
+  });
+
+  if (max === 0) return;
+
+  const barWidth = canvasWidth / 256;
+  const maxLog = Math.log1p(max);
+
+  ctx.save();
+  ctx.globalCompositeOperation = "lighter";
+  ctx.globalAlpha = 0.82;
+
+  COLOR_CHANNELS.forEach((channel) => {
+    const counts = perChannel[channel];
+    ctx.fillStyle = channelColors[channel];
+
+    for (let i = 0; i < 256; i += 1) {
+      const value = counts[i];
+      if (value === 0) continue;
+      const normalized = Math.log1p(value) / maxLog;
+      const barHeight = normalized * canvasHeight;
+      const x = i * barWidth;
+      const y = canvasHeight - barHeight;
+      ctx.fillRect(x, y, Math.max(1, barWidth), barHeight);
+    }
+  });
+
+  ctx.restore();
 }
 
 function updateChannelHistogram(channel: UiChannel) {
@@ -1141,19 +1615,21 @@ function updateChannelHistogram(channel: UiChannel) {
   const cache = getHistogramCache();
   if (!cache) return;
 
+  const drawRgbAdditiveHistogram =
+    lockChannelsEnabled && activeColorSpace === "rgb" && channel === "red";
   const thresholds = channelThresholds[channel];
   const counts =
     channel === "alpha"
       ? cache.alpha
-      : lockChannelsEnabled && channel === "red"
+      : lockChannelsEnabled &&
+          isSyncableChannel(channel) &&
+          channel === syncBaseChannelForColorSpace(activeColorSpace)
         ? cache.combined
-        : lockChannelsEnabled
+        : lockChannelsEnabled && isSyncableChannel(channel)
           ? null
           : cache.perChannel[channel as Channel];
 
-  if (!counts) return;
-
-  const max = counts.reduce((acc, value) => (value > acc ? value : acc), 0);
+  if (!counts && !drawRgbAdditiveHistogram) return;
   const { bars, controls } = targets;
   const barsCtx = bars.ctx;
   const barsCanvas = bars.canvas;
@@ -1170,11 +1646,17 @@ function updateChannelHistogram(channel: UiChannel) {
   barsCtx.fillStyle = "#0f0f0f";
   barsCtx.fillRect(0, 0, canvasWidth, canvasHeight);
 
-  if (max !== 0) {
+  if (drawRgbAdditiveHistogram) {
+    drawAdditiveRgbHistogram(barsCtx, barsCanvas, cache.perChannel);
+  } else if (counts) {
+    const max = counts.reduce((acc, value) => (value > acc ? value : acc), 0);
     const barWidth = canvasWidth / 256;
-    // Use white for combined histogram, original color for individual channels
     barsCtx.fillStyle =
-      lockChannelsEnabled && channel === "red" ? "#ffffff" : targets.color;
+      lockChannelsEnabled &&
+      isSyncableChannel(channel) &&
+      channel === syncBaseChannelForColorSpace(activeColorSpace)
+        ? "#ffffff"
+        : targets.color;
     const maxLog = Math.log1p(max);
 
     for (let i = 0; i < 256; i += 1) {
@@ -1242,83 +1724,14 @@ function updateChannelHistogram(channel: UiChannel) {
 }
 
 function updateAllHistograms() {
-  if (lockChannelsEnabled) {
-    // When synchronized, only update the red channel histogram and controls
-    updateChannelHistogram("red");
-    if (posterizeAlphaEnabled) {
-      updateChannelHistogram("alpha");
+  (["red", "green", "blue", "alpha"] as UiChannel[]).forEach((channel) => {
+    if (isVisibleWhenSynced(channel)) {
+      updateChannelHistogram(channel);
     }
-
-    // Clear green and blue histograms
-    const greenBarsCtx = histogramCtxGreen;
-    const greenControlsCtx = controlsCtxGreen;
-    const blueBarsCtx = histogramCtxBlue;
-    const blueControlsCtx = controlsCtxBlue;
-
-    if (greenBarsCtx && histogramCanvasGreen) {
-      greenBarsCtx.clearRect(
-        0,
-        0,
-        histogramCanvasGreen.width,
-        histogramCanvasGreen.height,
-      );
-      greenBarsCtx.fillStyle = "#0f0f0f";
-      greenBarsCtx.fillRect(
-        0,
-        0,
-        histogramCanvasGreen.width,
-        histogramCanvasGreen.height,
-      );
-    }
-    if (greenControlsCtx && controlsCanvasGreen) {
-      greenControlsCtx.clearRect(
-        0,
-        0,
-        controlsCanvasGreen.width,
-        controlsCanvasGreen.height,
-      );
-    }
-
-    if (blueBarsCtx && histogramCanvasBlue) {
-      blueBarsCtx.clearRect(
-        0,
-        0,
-        histogramCanvasBlue.width,
-        histogramCanvasBlue.height,
-      );
-      blueBarsCtx.fillStyle = "#0f0f0f";
-      blueBarsCtx.fillRect(
-        0,
-        0,
-        histogramCanvasBlue.width,
-        histogramCanvasBlue.height,
-      );
-    }
-    if (blueControlsCtx && controlsCanvasBlue) {
-      blueControlsCtx.clearRect(
-        0,
-        0,
-        controlsCanvasBlue.width,
-        controlsCanvasBlue.height,
-      );
-    }
-  } else {
-    updateChannelHistogram("red");
-    updateChannelHistogram("green");
-    updateChannelHistogram("blue");
-    if (posterizeAlphaEnabled) {
-      updateChannelHistogram("alpha");
-    }
-  }
+  });
 }
 
-/**
- * Render the processed canvas using the current channel settings, keeping the
- * original ImageData untouched so histograms continue to represent the source.
- */
-function renderPosterized() {
-  if (!originalImageData || !outputCanvas || !outputCtx) return;
-
+function posterizeImageData(source: ImageData): ImageData {
   ensureChannelOutputs("red");
   ensureChannelOutputs("green");
   ensureChannelOutputs("blue");
@@ -1326,17 +1739,10 @@ function renderPosterized() {
     ensureChannelOutputs("alpha");
   }
 
-  if (outputCanvas.width !== originalImageData.width) {
-    outputCanvas.width = originalImageData.width;
-  }
-  if (outputCanvas.height !== originalImageData.height) {
-    outputCanvas.height = originalImageData.height;
-  }
-
   const working = new ImageData(
-    new Uint8ClampedArray(originalImageData.data),
-    originalImageData.width,
-    originalImageData.height,
+    new Uint8ClampedArray(source.data),
+    source.width,
+    source.height,
   );
 
   let posterized =
@@ -1424,7 +1830,104 @@ function renderPosterized() {
       channelOutputs.alpha.length === levels ? channelOutputs.alpha : undefined;
     posterized = applyAlphaPosterize(posterized, levels, thresholds, outputs);
   }
+  return posterized;
+}
+
+/**
+ * Render the processed canvas using the current preview image data. The full
+ * resolution source is processed only during export.
+ */
+function renderPosterized() {
+  if (!originalImageData || !outputCanvas || !outputCtx) return;
+  const posterizeSource = getPreprocessedImageData();
+  if (!posterizeSource) return;
+
+  if (outputCanvas.width !== posterizeSource.width) {
+    outputCanvas.width = posterizeSource.width;
+  }
+  if (outputCanvas.height !== posterizeSource.height) {
+    outputCanvas.height = posterizeSource.height;
+  }
+
+  const posterized = posterizeImageData(posterizeSource);
   outputCtx.putImageData(posterized, 0, 0);
+}
+
+function getPreviewDimensions(width: number, height: number) {
+  if (!comparisonStage || width <= 0 || height <= 0) {
+    return { width, height, scale: 1 };
+  }
+  const rect = comparisonStage.getBoundingClientRect();
+  const maxWidth = Math.max(1, Math.floor(rect.width || width));
+  const maxHeight = Math.max(1, Math.floor(rect.height || height));
+  const scale = Math.min(1, maxWidth / width, maxHeight / height);
+  return {
+    width: Math.max(1, Math.round(width * scale)),
+    height: Math.max(1, Math.round(height * scale)),
+    scale,
+  };
+}
+
+function setImageAspect(width: number, height: number) {
+  if (!comparisonStage || width <= 0 || height <= 0) return;
+  comparisonStage.style.setProperty(
+    "--image-aspect",
+    (width / height).toString(),
+  );
+}
+
+function buildPreviewFromFullResolution() {
+  if (!fullResolutionImageData || !sourceCanvas || !sourceCtx) return;
+
+  const { width, height, scale } = getPreviewDimensions(
+    fullResolutionImageData.width,
+    fullResolutionImageData.height,
+  );
+
+  if (
+    originalImageData &&
+    originalImageData.width === width &&
+    originalImageData.height === height &&
+    previewScale === scale
+  ) {
+    return;
+  }
+  previewScale = scale;
+
+  const fullCanvas = document.createElement("canvas");
+  fullCanvas.width = fullResolutionImageData.width;
+  fullCanvas.height = fullResolutionImageData.height;
+  const fullCtx = fullCanvas.getContext("2d");
+  if (!fullCtx) return;
+  fullCtx.putImageData(fullResolutionImageData, 0, 0);
+
+  sourceCanvas.width = width;
+  sourceCanvas.height = height;
+  sourceCtx.clearRect(0, 0, width, height);
+  sourceCtx.drawImage(fullCanvas, 0, 0, width, height);
+  originalImageData = sourceCtx.getImageData(0, 0, width, height);
+  originalImageRevision += 1;
+  preprocessedImageCache = null;
+  histogramCache = null;
+
+  if (outputCanvas) {
+    outputCanvas.width = width;
+    outputCanvas.height = height;
+  }
+
+  renderPosterized();
+  updateAllHistograms();
+}
+
+function schedulePreviewResize() {
+  if (!fullResolutionImageData) return;
+  if (previewResizeFrame !== null) {
+    cancelAnimationFrame(previewResizeFrame);
+  }
+  previewResizeFrame = requestAnimationFrame(() => {
+    previewResizeFrame = null;
+    buildPreviewFromFullResolution();
+  });
 }
 
 function drawFromSource(
@@ -1436,54 +1939,31 @@ function drawFromSource(
 
   const img = new Image();
   img.onload = () => {
-    drawImageToCanvas(img, sourceCanvas, sourceCtx);
-    originalImageData = sourceCtx.getImageData(
+    const fullCanvas = document.createElement("canvas");
+    const fullCtx = fullCanvas.getContext("2d");
+    if (!fullCtx) return;
+    drawImageToCanvas(img, fullCanvas, fullCtx);
+    fullResolutionImageData = fullCtx.getImageData(
       0,
       0,
-      sourceCanvas.width,
-      sourceCanvas.height,
+      fullCanvas.width,
+      fullCanvas.height,
     );
-    originalImageRevision += 1;
-    histogramCache = null;
+    originalImageData = null;
+    setImageAspect(fullCanvas.width, fullCanvas.height);
 
     // Save image data to localStorage if requested
     if (saveToStorage && src !== DEFAULT_IMAGE) {
       try {
-        const canvas = document.createElement("canvas");
-        canvas.width = sourceCanvas.width;
-        canvas.height = sourceCanvas.height;
-        const ctx = canvas.getContext("2d");
-        if (ctx) {
-          ctx.putImageData(originalImageData, 0, 0);
-          const dataUrl = canvas.toDataURL("image/png");
-          localStorage.setItem("super-posterize-image", dataUrl);
-          localStorage.setItem("super-posterize-has-image", "true");
-        }
+        const dataUrl = fullCanvas.toDataURL("image/png");
+        localStorage.setItem("threshiator-image", dataUrl);
+        localStorage.setItem("threshiator-has-image", "true");
       } catch (e) {
         console.warn("Failed to save image to localStorage:", e);
       }
     }
 
-    if (outputCanvas && outputCtx) {
-      if (outputCanvas.width !== sourceCanvas.width) {
-        outputCanvas.width = sourceCanvas.width;
-      }
-      if (outputCanvas.height !== sourceCanvas.height) {
-        outputCanvas.height = sourceCanvas.height;
-      }
-      if (comparisonStage && sourceCanvas.width && sourceCanvas.height) {
-        const aspect =
-          sourceCanvas.width && sourceCanvas.height
-            ? sourceCanvas.width / sourceCanvas.height
-            : 1;
-        comparisonStage.style.setProperty(
-          "--image-aspect",
-          aspect.toString(),
-        );
-      }
-      renderPosterized();
-    }
-    updateAllHistograms();
+    buildPreviewFromFullResolution();
     cleanup?.();
   };
   img.src = src;
@@ -1492,17 +1972,21 @@ function drawFromSource(
 function syncChannelLabel(channel: UiChannel, value: number) {
   const label = levelLabels[channel];
   if (label) {
-    label.textContent = value.toString();
+    label.value = value.toString();
   }
 }
 
 function setChannelLevel(channel: UiChannel, value: number) {
   const clamped = Math.max(MIN_LEVELS, Math.min(MAX_LEVELS, Math.floor(value)));
+  if (channelLevels[channel] === clamped) {
+    syncChannelLabel(channel, clamped);
+    return clamped;
+  }
   channelLevels[channel] = clamped;
   channelThresholds[channel] = createEvenThresholds(clamped);
   channelOutputs[channel] = createLinearOutputs(clamped);
   syncChannelLabel(channel, clamped);
-  if (lockChannelsEnabled && channel !== "alpha") {
+  if (lockChannelsEnabled && isSyncableChannel(channel)) {
     syncOtherChannelsFrom(channel as Channel);
     renderAllBandControls();
     updateAllHistograms();
@@ -1511,6 +1995,7 @@ function setChannelLevel(channel: UiChannel, value: number) {
     renderBandControls(channel);
   }
   renderPosterized();
+  return clamped;
 }
 
 function resetChannelLevels() {
@@ -1526,26 +2011,33 @@ function resetChannelLevels() {
   renderPosterized();
 }
 
-function setChannelThreshold(channel: UiChannel, index: number, value: number) {
+function setChannelThreshold(
+  channel: UiChannel,
+  index: number,
+  value: number,
+  options: { rerenderControls?: boolean } = {},
+) {
   const thresholds = channelThresholds[channel];
-  if (!thresholds || index < 0 || index >= thresholds.length) return;
+  if (!thresholds || index < 0 || index >= thresholds.length) return null;
 
   const minValue = index === 0 ? 1 : thresholds[index - 1] + 1;
   const maxValue =
     index === thresholds.length - 1 ? 254 : thresholds[index + 1] - 1;
   const clamped = Math.max(minValue, Math.min(maxValue, Math.round(value)));
-  if (thresholds[index] === clamped) return;
+  if (thresholds[index] === clamped) return clamped;
 
   thresholds[index] = clamped;
-  if (lockChannelsEnabled && channel !== "alpha") {
+  const rerenderControls = options.rerenderControls ?? true;
+  if (lockChannelsEnabled && isSyncableChannel(channel)) {
     syncOtherChannelsFrom(channel as Channel);
-    renderAllBandControls();
+    if (rerenderControls) renderAllBandControls();
     updateAllHistograms();
   } else {
     updateChannelHistogram(channel);
-    renderBandControls(channel);
+    if (rerenderControls) renderBandControls(channel);
   }
   renderPosterized();
+  return clamped;
 }
 
 function attachUnifiedDragHandlers(
@@ -1630,10 +2122,12 @@ function attachUnifiedDragHandlers(
         const scaleX = canvas.width / rect.width;
         const canvasX = x * scaleX;
         const value = (canvasX / canvas.width) * 255;
-        setChannelThreshold(channel, dragState.index, value);
+        setChannelThreshold(channel, dragState.index, value, {
+          rerenderControls: false,
+        });
 
-        // If channels are synchronized, apply to all channels
-        if (lockChannelsEnabled && channel !== "alpha") {
+        // If channels are synchronized, apply only within the current sync group.
+        if (lockChannelsEnabled && isSyncableChannel(channel)) {
           synchronizeChannels(channel as Channel);
         }
       } else if (dragState.type === "level") {
@@ -1643,10 +2137,10 @@ function attachUnifiedDragHandlers(
         if (outputs[dragState.index] !== undefined) {
           outputs[dragState.index] = value;
 
-          // If channels are synchronized, apply to all channels
-          if (lockChannelsEnabled && channel !== "alpha") {
+          // If channels are synchronized, apply only within the current sync group.
+          if (lockChannelsEnabled && isSyncableChannel(channel)) {
             const currentIndex = dragState.index; // Store index before forEach
-            COLOR_CHANNELS.forEach((ch) => {
+            syncGroupForColorSpace(activeColorSpace).forEach((ch) => {
               if (
                 ch !== channel &&
                 channelOutputs[ch][currentIndex] !== undefined
@@ -1664,8 +2158,7 @@ function attachUnifiedDragHandlers(
       return;
     }
 
-    // Only update cursor if this channel is active (not synchronized or is red channel)
-    if (!lockChannelsEnabled || channel === "red" || channel === "alpha") {
+    if (isVisibleWhenSynced(channel)) {
       updateCursor(x, y);
     } else {
       canvas.style.cursor = "default";
@@ -1675,8 +2168,7 @@ function attachUnifiedDragHandlers(
   const handlePointerDown = (event: PointerEvent) => {
     if (dragState) return;
 
-    // If channels are synchronized and this is not the red channel, ignore
-    if (lockChannelsEnabled && channel !== "red" && channel !== "alpha") return;
+    if (!isVisibleWhenSynced(channel)) return;
 
     const rect = canvas.getBoundingClientRect();
     const x = event.clientX - rect.left;
@@ -1719,6 +2211,12 @@ function attachUnifiedDragHandlers(
     }
     dragState = null;
 
+    if (lockChannelsEnabled && isSyncableChannel(channel)) {
+      renderAllBandControls();
+    } else {
+      renderBandControls(channel);
+    }
+
     // Update cursor after drag ends
     const rect = canvas.getBoundingClientRect();
     const x = event.clientX - rect.left;
@@ -1750,6 +2248,19 @@ colorSpaceSelect?.addEventListener("change", () => {
     setColorSpace(raw);
   }
 });
+
+smoothingInput?.addEventListener("input", () => {
+  setSmoothingAmount(Number(smoothingInput.value));
+});
+
+smoothingValue?.addEventListener("change", () => {
+  setSmoothingAmount(Number(smoothingValue.value));
+});
+if (smoothingValue) {
+  commitNumberInputOnEnter(smoothingValue, () => {
+    setSmoothingAmount(Number(smoothingValue.value));
+  });
+}
 
 posterizeAlphaToggle?.addEventListener("change", () => {
   togglePosterizeAlpha(posterizeAlphaToggle.checked);
@@ -1786,6 +2297,29 @@ document.querySelectorAll<HTMLButtonElement>(".band-step").forEach((button) => {
   });
 });
 
+document.querySelectorAll<HTMLInputElement>(".band-value").forEach((input) => {
+  const channel = input.closest<HTMLElement>("[data-channel]")?.dataset
+    .channel as UiChannel | undefined;
+  if (!channel) return;
+
+  const commit = () => {
+    if (input.value === "") {
+      syncChannelLabel(channel, channelLevels[channel]);
+      return;
+    }
+    const next = Number(input.value);
+    if (!Number.isFinite(next)) {
+      syncChannelLabel(channel, channelLevels[channel]);
+      return;
+    }
+    const applied = setChannelLevel(channel, next);
+    input.value = applied.toString();
+  };
+
+  input.addEventListener("change", commit);
+  commitNumberInputOnEnter(input, commit);
+});
+
 fileInputBtn?.addEventListener("click", () => {
   fileInput?.click();
 });
@@ -1805,12 +2339,14 @@ fileInput?.addEventListener("change", () => {
 resetBtn?.addEventListener("click", () => {
   if (fileInput) fileInput.value = "";
   if (selectedFileName) selectedFileName.textContent = "No file selected";
-  localStorage.removeItem("super-posterize-image");
-  localStorage.removeItem("super-posterize-has-image");
+  localStorage.removeItem("threshiator-image");
+  localStorage.removeItem("threshiator-has-image");
   localStorage.removeItem(ALPHA_STORAGE_KEY);
+  localStorage.removeItem(SMOOTHING_STORAGE_KEY);
+  setSmoothingAmount(0, { saveToStorage: false, rerender: false });
   togglePosterizeAlpha(false);
   resetChannelLevels();
-  if (!originalImageData) {
+  if (!fullResolutionImageData) {
     drawFromSource(DEFAULT_IMAGE);
   }
 });
@@ -1833,11 +2369,17 @@ function initializeApp() {
     posterizeAlphaToggle.checked = posterizeAlphaEnabled;
   }
 
+  const savedSmoothing = localStorage.getItem(SMOOTHING_STORAGE_KEY);
+  setSmoothingAmount(sanitizeSmoothing(savedSmoothing ?? 0), {
+    saveToStorage: false,
+    rerender: false,
+  });
+
   resetChannelLevels();
 
   // Try to restore saved image, otherwise use default
-  const savedImage = localStorage.getItem("super-posterize-image");
-  const hasImage = localStorage.getItem("super-posterize-has-image");
+  const savedImage = localStorage.getItem("threshiator-image");
+  const hasImage = localStorage.getItem("threshiator-has-image");
 
   if (savedImage && hasImage === "true") {
     drawFromSource(savedImage);

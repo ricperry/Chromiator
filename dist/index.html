@@ -1,142 +1,339 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
-<head>
-<meta charset="UTF-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>Super Posterize Prototype</title>
-  <script type="module" crossorigin src="/assets/index-BlJXlncQ.js"></script>
-  <link rel="stylesheet" crossorigin href="/assets/index-0jOxsw7C.css">
-</head>
-<body>
-<div id="app">
-<h1>Super Posterize Prototype</h1>
-  <div class="file-input-section">
-    <button id="fileInputBtn" class="file-input-button">Load Image...</button>
-    <input type="file" id="fileInput" accept="image/*" hidden />
-    <div id="selectedFileName" class="selected-filename">No file selected</div>
-  </div>
-  <div class="controls">
-    <div class="control-actions">
-      <button id="saveImageBtn">Save Image</button>
-      <button id="exportSettingsBtn">Export Settings</button>
-      <button id="importSettingsBtn">Import Settings</button>
-      <input type="file" id="settingsFileInput" accept=".json,.png,image/png" hidden />
-    </div>
-    <div class="presets-control">
-      <select id="presetsSelect">
-        <option value="">-- Select Preset --</option>
-      </select>
-      <div class="preset-description"></div>
-    </div>
-    <div class="colorspace-control">
-      <label for="colorSpaceSelect">Posterize Space</label>
-      <select id="colorSpaceSelect">
-        <option value="rgb">RGB (R/G/B)</option>
-        <option value="hsv">HSV (H/S/V)</option>
-      </select>
-    </div>
-    <div class="alpha-toggle">
-      <span>Posterize Alpha</span>
-      <label class="toggle-switch">
-        <input type="checkbox" id="posterizeAlphaToggle" />
-        <span class="toggle-slider"></span>
-      </label>
-    </div>
-    <div class="sync-toggle">
-      <span>Synchronize Channels</span>
-      <label class="toggle-switch">
-        <input type="checkbox" id="lockChannelsToggle" />
-        <span class="toggle-slider"></span>
-      </label>
-    </div>
-    <div class="reset-control">
-      <button id="resetBtn">Reset</button>
-    </div>
-  </div>
-  <div class="visual-area">
-    <div class="comparison-panel">
-      <div class="comparison-header">
-        <h2>Image Comparison</h2>
-        <div class="comparison-slider">
-          <label for="comparisonSlider">Preview Reveal</label>
-          <input type="range" id="comparisonSlider" min="0" max="100" value="50" />
-        </div>
-      </div>
-      <div class="comparison-stage" id="comparisonStage">
-        <canvas id="originalCanvas"></canvas>
-        <div class="preview-overlay">
-          <canvas id="processedCanvas"></canvas>
-        </div>
-        <div class="slider-indicator" aria-hidden="true"></div>
-      </div>
-      <div class="comparison-legend">
-        <span><span class="legend-swatch legend-original"></span>Original</span>
-        <span><span class="legend-swatch legend-preview"></span>Preview</span>
-      </div>
-    </div>
-    <div id="histograms">
-      <div class="histogram" id="histogram-red" data-channel="red">
-        <div class="channel-header">
-          <h2 class="channel-title" data-channel="red">Red Channel</h2>
-          <div class="channel-controls" data-channel="red">
-            <button class="band-step" data-channel="red" data-direction="decrement" aria-label="Decrease red bands">&lt;</button>
-            <span class="band-value" id="redLevelsValue">8</span>
-            <button class="band-step" data-channel="red" data-direction="increment" aria-label="Increase red bands">&gt;</button>
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Threshiator</title>
+    <script type="module" crossorigin src="/assets/index-B59Oy_nb.js"></script>
+    <link rel="stylesheet" crossorigin href="/assets/index-CJbzzgWv.css">
+  </head>
+  <body>
+    <div id="app" class="app-shell">
+      <header class="app-header">
+        <div class="brand-block">
+          <h1>Threshiator</h1>
+          <div class="selected-filename" id="selectedFileName">
+            No file selected
           </div>
         </div>
-        <div class="histogram-canvases">
-          <canvas id="histogramCanvasRed" width="256" height="120" data-channel="red" class="histogram-bars"></canvas>
-          <canvas id="histogramControlsRed" width="256" height="120" data-channel="red" class="histogram-controls"></canvas>
+        <div class="header-actions">
+          <button id="fileInputBtn" class="file-input-button">
+            Load Image
+          </button>
+          <button id="saveImageBtn">Save PNG</button>
+          <button id="exportSettingsBtn">Export Settings</button>
+          <button id="importSettingsBtn">Import Settings</button>
+          <button id="resetBtn">Reset</button>
+          <input type="file" id="fileInput" accept="image/*" hidden />
+          <input
+            type="file"
+            id="settingsFileInput"
+            accept=".json,.png,image/png"
+            hidden
+          />
         </div>
-        <div class="band-levels" data-channel="red"></div>
-      </div>
-      <div class="histogram" id="histogram-green" data-channel="green">
-        <div class="channel-header">
-          <h2 class="channel-title" data-channel="green">Green Channel</h2>
-          <div class="channel-controls" data-channel="green">
-            <button class="band-step" data-channel="green" data-direction="decrement" aria-label="Decrease green bands">&lt;</button>
-            <span class="band-value" id="greenLevelsValue">8</span>
-            <button class="band-step" data-channel="green" data-direction="increment" aria-label="Increase green bands">&gt;</button>
+      </header>
+
+      <main class="workspace">
+        <section class="preview-pane" aria-label="Image preview">
+          <div class="comparison-toolbar">
+            <div class="comparison-title">Original / Preview</div>
+            <div class="comparison-slider">
+              <span>Original</span>
+              <input
+                type="range"
+                id="comparisonSlider"
+                min="0"
+                max="100"
+                value="50"
+                aria-label="Preview reveal"
+              />
+              <span>Preview</span>
+            </div>
           </div>
-        </div>
-        <div class="histogram-canvases">
-          <canvas id="histogramCanvasGreen" width="256" height="120" data-channel="green" class="histogram-bars"></canvas>
-          <canvas id="histogramControlsGreen" width="256" height="120" data-channel="green" class="histogram-controls"></canvas>
-        </div>
-        <div class="band-levels" data-channel="green"></div>
-      </div>
-      <div class="histogram" id="histogram-blue" data-channel="blue">
-        <div class="channel-header">
-          <h2 class="channel-title" data-channel="blue">Blue Channel</h2>
-          <div class="channel-controls" data-channel="blue">
-            <button class="band-step" data-channel="blue" data-direction="decrement" aria-label="Decrease blue bands">&lt;</button>
-            <span class="band-value" id="blueLevelsValue">8</span>
-            <button class="band-step" data-channel="blue" data-direction="increment" aria-label="Increase blue bands">&gt;</button>
+          <div class="comparison-stage" id="comparisonStage">
+            <canvas id="originalCanvas" class="comparison-canvas"></canvas>
+            <div class="preview-overlay">
+              <canvas id="processedCanvas" class="comparison-canvas"></canvas>
+            </div>
+            <div class="slider-indicator" aria-hidden="true"></div>
           </div>
-        </div>
-        <div class="histogram-canvases">
-          <canvas id="histogramCanvasBlue" width="256" height="120" data-channel="blue" class="histogram-bars"></canvas>
-          <canvas id="histogramControlsBlue" width="256" height="120" data-channel="blue" class="histogram-controls"></canvas>
-        </div>
-        <div class="band-levels" data-channel="blue"></div>
-      </div>
-      <div class="histogram hidden" id="histogram-alpha" data-channel="alpha">
-        <div class="channel-header">
-          <h2 class="channel-title" data-channel="alpha">Alpha Channel</h2>
-          <div class="channel-controls" data-channel="alpha">
-            <button class="band-step" data-channel="alpha" data-direction="decrement" aria-label="Decrease alpha bands">&lt;</button>
-            <span class="band-value" id="alphaLevelsValue">8</span>
-            <button class="band-step" data-channel="alpha" data-direction="increment" aria-label="Increase alpha bands">&gt;</button>
-          </div>
-        </div>
-        <div class="histogram-canvases">
-          <canvas id="histogramCanvasAlpha" width="256" height="120" data-channel="alpha" class="histogram-bars"></canvas>
-          <canvas id="histogramControlsAlpha" width="256" height="120" data-channel="alpha" class="histogram-controls"></canvas>
-        </div>
-        <div class="band-levels" data-channel="alpha"></div>
-      </div>
+        </section>
+
+        <aside class="controls-pane">
+          <section class="settings-panel" aria-label="Settings">
+            <div class="settings-grid">
+              <label class="field-block">
+                <span>Preset</span>
+                <select id="presetsSelect">
+                  <option value="">Custom</option>
+                </select>
+              </label>
+              <label class="field-block">
+                <span>Space</span>
+                <select id="colorSpaceSelect">
+                  <option value="rgb">RGB</option>
+                  <option value="hsv">HSV</option>
+                </select>
+              </label>
+              <label class="field-block smoothing-control">
+                <span>Smoothing</span>
+                <div class="range-with-value">
+                  <input
+                    type="range"
+                    id="smoothingInput"
+                    min="0"
+                    max="10"
+                    step="1"
+                    value="0"
+                  />
+                  <input
+                    type="number"
+                    id="smoothingValue"
+                    min="0"
+                    max="10"
+                    step="1"
+                    value="0"
+                    aria-label="Smoothing amount"
+                  />
+                </div>
+              </label>
+            </div>
+            <div class="preset-description"></div>
+            <div class="toggle-row">
+              <label class="toggle-control">
+                <input type="checkbox" id="posterizeAlphaToggle" />
+                <span class="toggle-slider"></span>
+                <span>Alpha</span>
+              </label>
+              <label class="toggle-control">
+                <input type="checkbox" id="lockChannelsToggle" />
+                <span class="toggle-slider"></span>
+                <span id="syncChannelsLabel">Sync RGB</span>
+              </label>
+            </div>
+            <div class="mode-warning" id="hueModeWarning" hidden>
+              Hue uses 0-360 degree controls and is not synced with Saturation /
+              Value.
+            </div>
+          </section>
+
+          <section id="histograms" aria-label="Channel controls">
+            <div class="histogram" id="histogram-red" data-channel="red">
+              <div class="channel-header">
+                <h2 class="channel-title" data-channel="red">Red Channel</h2>
+                <div class="channel-controls" data-channel="red">
+                  <span class="channel-count-label">Levels</span>
+                  <button
+                    class="band-step"
+                    data-channel="red"
+                    data-direction="decrement"
+                    aria-label="Decrease red levels"
+                  >
+                    -
+                  </button>
+                  <input
+                    class="band-value"
+                    id="redLevelsValue"
+                    type="number"
+                    min="2"
+                    max="32"
+                    step="1"
+                    value="8"
+                    aria-label="Red levels"
+                  />
+                  <button
+                    class="band-step"
+                    data-channel="red"
+                    data-direction="increment"
+                    aria-label="Increase red levels"
+                  >
+                    +
+                  </button>
+                </div>
+              </div>
+              <div class="histogram-canvases">
+                <canvas
+                  id="histogramCanvasRed"
+                  width="256"
+                  height="120"
+                  data-channel="red"
+                  class="histogram-bars"
+                ></canvas>
+                <canvas
+                  id="histogramControlsRed"
+                  width="256"
+                  height="120"
+                  data-channel="red"
+                  class="histogram-controls"
+                ></canvas>
+              </div>
+              <div class="band-levels" data-channel="red"></div>
+            </div>
+            <div class="histogram" id="histogram-green" data-channel="green">
+              <div class="channel-header">
+                <h2 class="channel-title" data-channel="green">
+                  Green Channel
+                </h2>
+                <div class="channel-controls" data-channel="green">
+                  <span class="channel-count-label">Levels</span>
+                  <button
+                    class="band-step"
+                    data-channel="green"
+                    data-direction="decrement"
+                    aria-label="Decrease green levels"
+                  >
+                    -
+                  </button>
+                  <input
+                    class="band-value"
+                    id="greenLevelsValue"
+                    type="number"
+                    min="2"
+                    max="32"
+                    step="1"
+                    value="8"
+                    aria-label="Green levels"
+                  />
+                  <button
+                    class="band-step"
+                    data-channel="green"
+                    data-direction="increment"
+                    aria-label="Increase green levels"
+                  >
+                    +
+                  </button>
+                </div>
+              </div>
+              <div class="histogram-canvases">
+                <canvas
+                  id="histogramCanvasGreen"
+                  width="256"
+                  height="120"
+                  data-channel="green"
+                  class="histogram-bars"
+                ></canvas>
+                <canvas
+                  id="histogramControlsGreen"
+                  width="256"
+                  height="120"
+                  data-channel="green"
+                  class="histogram-controls"
+                ></canvas>
+              </div>
+              <div class="band-levels" data-channel="green"></div>
+            </div>
+            <div class="histogram" id="histogram-blue" data-channel="blue">
+              <div class="channel-header">
+                <h2 class="channel-title" data-channel="blue">Blue Channel</h2>
+                <div class="channel-controls" data-channel="blue">
+                  <span class="channel-count-label">Levels</span>
+                  <button
+                    class="band-step"
+                    data-channel="blue"
+                    data-direction="decrement"
+                    aria-label="Decrease blue levels"
+                  >
+                    -
+                  </button>
+                  <input
+                    class="band-value"
+                    id="blueLevelsValue"
+                    type="number"
+                    min="2"
+                    max="32"
+                    step="1"
+                    value="8"
+                    aria-label="Blue levels"
+                  />
+                  <button
+                    class="band-step"
+                    data-channel="blue"
+                    data-direction="increment"
+                    aria-label="Increase blue levels"
+                  >
+                    +
+                  </button>
+                </div>
+              </div>
+              <div class="histogram-canvases">
+                <canvas
+                  id="histogramCanvasBlue"
+                  width="256"
+                  height="120"
+                  data-channel="blue"
+                  class="histogram-bars"
+                ></canvas>
+                <canvas
+                  id="histogramControlsBlue"
+                  width="256"
+                  height="120"
+                  data-channel="blue"
+                  class="histogram-controls"
+                ></canvas>
+              </div>
+              <div class="band-levels" data-channel="blue"></div>
+            </div>
+            <div
+              class="histogram hidden"
+              id="histogram-alpha"
+              data-channel="alpha"
+            >
+              <div class="channel-header">
+                <h2 class="channel-title" data-channel="alpha">
+                  Alpha Channel
+                </h2>
+                <div class="channel-controls" data-channel="alpha">
+                  <span class="channel-count-label">Levels</span>
+                  <button
+                    class="band-step"
+                    data-channel="alpha"
+                    data-direction="decrement"
+                    aria-label="Decrease alpha levels"
+                  >
+                    -
+                  </button>
+                  <input
+                    class="band-value"
+                    id="alphaLevelsValue"
+                    type="number"
+                    min="2"
+                    max="32"
+                    step="1"
+                    value="8"
+                    aria-label="Alpha levels"
+                  />
+                  <button
+                    class="band-step"
+                    data-channel="alpha"
+                    data-direction="increment"
+                    aria-label="Increase alpha levels"
+                  >
+                    +
+                  </button>
+                </div>
+              </div>
+              <div class="histogram-canvases">
+                <canvas
+                  id="histogramCanvasAlpha"
+                  width="256"
+                  height="120"
+                  data-channel="alpha"
+                  class="histogram-bars"
+                ></canvas>
+                <canvas
+                  id="histogramControlsAlpha"
+                  width="256"
+                  height="120"
+                  data-channel="alpha"
+                  class="histogram-controls"
+                ></canvas>
+              </div>
+              <div class="band-levels" data-channel="alpha"></div>
+            </div>
+          </section>
+        </aside>
+      </main>
     </div>
-  </div>
-</div>
-</body>
+  </body>
 </html>

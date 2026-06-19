@@ -1,7 +1,7 @@
 /**
-* Minimal per-channel posterization (no band widths or hue yet).
-* This is a stub you can extend into full Super Posterize logic.
-*/
+ * Minimal per-channel posterization (no band widths or hue yet).
+ * This is a stub you can extend into full Threshiator logic.
+ */
 export type Levels = { R: number; G: number; B: number };
 export type ChannelThresholds = Partial<Record<keyof Levels, number[]>>;
 export type ChannelOutputs = Partial<Record<keyof Levels, number[]>>;
@@ -47,11 +47,7 @@ export function rgbToHsv255(
   const s = max === 0 ? 0 : delta / max;
   const v = max;
 
-  return [
-    clampChannel(h * 255),
-    clampChannel(s * 255),
-    clampChannel(v * 255),
-  ];
+  return [clampChannel(h * 255), clampChannel(s * 255), clampChannel(v * 255)];
 }
 
 export function hsv255ToRgb(
@@ -117,7 +113,7 @@ function quantize(
   value: number,
   levels: number,
   thresholds?: number[],
-  outputs?: number[]
+  outputs?: number[],
 ): number {
   /**
    * Quantize a single channel value into a band defined by the supplied
@@ -158,7 +154,7 @@ export function applyBasicPosterize(
   imageData: ImageData,
   levels: Levels,
   thresholds: ChannelThresholds = {},
-  outputs: ChannelOutputs = {}
+  outputs: ChannelOutputs = {},
 ): ImageData {
   /**
    * Iterate over the supplied ImageData and posterize each channel according
@@ -171,9 +167,12 @@ export function applyBasicPosterize(
   const Lg = Math.max(1, Math.floor(levels.G));
   const Lb = Math.max(1, Math.floor(levels.B));
 
-  const thresholdsR = thresholds.R && thresholds.R.length === Lr - 1 ? thresholds.R : undefined;
-  const thresholdsG = thresholds.G && thresholds.G.length === Lg - 1 ? thresholds.G : undefined;
-  const thresholdsB = thresholds.B && thresholds.B.length === Lb - 1 ? thresholds.B : undefined;
+  const thresholdsR =
+    thresholds.R && thresholds.R.length === Lr - 1 ? thresholds.R : undefined;
+  const thresholdsG =
+    thresholds.G && thresholds.G.length === Lg - 1 ? thresholds.G : undefined;
+  const thresholdsB =
+    thresholds.B && thresholds.B.length === Lb - 1 ? thresholds.B : undefined;
 
   const outputsR = outputs.R && outputs.R.length === Lr ? outputs.R : undefined;
   const outputsG = outputs.G && outputs.G.length === Lg ? outputs.G : undefined;
@@ -200,9 +199,12 @@ export function applyHsvPosterize(
   const Ls = Math.max(1, Math.floor(levels.S));
   const Lv = Math.max(1, Math.floor(levels.V));
 
-  const thresholdsH = thresholds.H && thresholds.H.length === Lh - 1 ? thresholds.H : undefined;
-  const thresholdsS = thresholds.S && thresholds.S.length === Ls - 1 ? thresholds.S : undefined;
-  const thresholdsV = thresholds.V && thresholds.V.length === Lv - 1 ? thresholds.V : undefined;
+  const thresholdsH =
+    thresholds.H && thresholds.H.length === Lh - 1 ? thresholds.H : undefined;
+  const thresholdsS =
+    thresholds.S && thresholds.S.length === Ls - 1 ? thresholds.S : undefined;
+  const thresholdsV =
+    thresholds.V && thresholds.V.length === Lv - 1 ? thresholds.V : undefined;
 
   const outputsH = outputs.H && outputs.H.length === Lh ? outputs.H : undefined;
   const outputsS = outputs.S && outputs.S.length === Ls ? outputs.S : undefined;
@@ -237,7 +239,8 @@ export function applyAlphaPosterize(
   const { data } = imageData;
   const L = Math.max(1, Math.floor(levels));
 
-  const thresholdsA = thresholds && thresholds.length === L - 1 ? thresholds : undefined;
+  const thresholdsA =
+    thresholds && thresholds.length === L - 1 ? thresholds : undefined;
   const outputsA = outputs && outputs.length === L ? outputs : undefined;
 
   for (let i = 0; i < data.length; i += 4) {

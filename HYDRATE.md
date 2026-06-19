@@ -1,13 +1,13 @@
 # Project Boot Hydration (Web Canvas Prototype)
 
-This repo uses an open-source, Linux-friendly toolchain to prototype the **Super Posterize** effect in the browser (HTML/JS/Canvas/WebGL). This document defines how your code assistant should behave in this workspace.
+This repo uses an open-source, Linux-friendly toolchain to prototype the **Threshiator** effect in the browser (HTML/JS/Canvas/WebGL). This document defines how your code assistant should behave in this workspace.
 
 ## Recent Changes
 
 [2025-10-05] **PNG Metadata System Implementation**:
 
 - Added ComfyUI-style PNG metadata embedding using tEXt chunks
-- Implemented "Save Image" functionality with embedded SuperPosterize settings
+- Implemented "Save Image" functionality with embedded Threshiator settings
 - Added PNG import capability - load settings directly from saved PNG files
 - Created manifest-based preset system supporting both JSON and PNG presets
 - Added CRC32 validation for PNG chunk integrity
@@ -86,7 +86,7 @@ You may run local commands inside this repo **without asking each time**. I APPR
 
 ### PNG Metadata System
 
-The PNG metadata system embeds SuperPosterize settings directly into PNG files using the tEXt chunk format, similar to ComfyUI workflows:
+The PNG metadata system embeds Threshiator settings directly into PNG files using the tEXt chunk format, similar to ComfyUI workflows:
 
 **Core Functions:**
 
@@ -99,7 +99,7 @@ The PNG metadata system embeds SuperPosterize settings directly into PNG files u
 
 1. Canvas `toBlob()` generates base PNG data
 2. Settings serialized to JSON string
-3. tEXt chunk created with keyword "SuperPosterize"
+3. tEXt chunk created with keyword "Threshiator"
 4. Chunk inserted before IEND with proper CRC32
 5. Modified PNG available for download with embedded metadata
 
@@ -155,7 +155,7 @@ Manifest-driven approach eliminates hardcoded filenames:
 - ✅ `index.html` — **if missing**, create a minimal page with an `<input type="file">`, a `<canvas id="preview">`, and a `<div id="histograms">`.
 - ✅ `src/` — **if missing**, create:
   - `src/main.ts` (or `main.js`) — bootstraps UI, file loader, rendering loop.
-  - `src/effect.ts` — core Super Posterize algorithm (per-channel bands, widths, level, hue rotate).
+  - `src/effect.ts` — core Threshiator algorithm (per-channel bands, widths, level, hue rotate).
   - `src/histogram.ts` — RGB histogram computation + band divider overlay.
   - `src/ui.ts` — state model, sliders, tab logic (R/G/B), presets, lock-channels.
   - `src/types.ts` — (if TS) shared types for ChannelState/Band.
@@ -203,7 +203,7 @@ Manifest-driven approach eliminates hardcoded filenames:
 
 ---
 
-## Architecture Notes (Super Posterize)
+## Architecture Notes (Threshiator)
 
 - **State model**
 
@@ -267,7 +267,7 @@ Manifest-driven approach eliminates hardcoded filenames:
 
 Short notes that provide context and decisions as the project evolves. Keep newest at the top.
 
-- [2025-10-05] **Major Feature:** Implemented ComfyUI-style PNG metadata embedding system. Users can now save processed images with embedded SuperPosterize settings and load settings directly from PNG files. Built manifest-based preset system supporting both JSON and PNG presets, eliminating hardcoded filenames.
+- [2025-10-05] **Major Feature:** Implemented ComfyUI-style PNG metadata embedding system. Users can now save processed images with embedded Threshiator settings and load settings directly from PNG files. Built manifest-based preset system supporting both JSON and PNG presets, eliminating hardcoded filenames.
 - [2025-10-05] Added comprehensive preset management with `/presets/manifest.json` controlling which files are loaded as presets. Users can add custom presets without code changes.
 - [2025-10-05] Built PNG tEXt chunk manipulation with CRC32 validation for reliable metadata embedding and extraction.
 - [2025-10-05] Enhanced Import Settings to handle both JSON and PNG files seamlessly with proper error handling and fallbacks.
@@ -283,7 +283,7 @@ Short notes that provide context and decisions as the project evolves. Keep newe
 - [2025-10-05] Added settings import/export workflow (JSON).
 - [2025-10-05] Reviewed hydration guidelines and adjusted VS Code auto-import behavior to avoid invalid settings.
 
-- [YYYY-MM-DD] Switched project hydration to web stack (Vite/TS/Canvas). Goal: fast browser prototype for Super Posterize; future port to G’MIC/Krita. (Replaces Python-scaffold focus.)
+- [YYYY-MM-DD] Switched project hydration to web stack (Vite/TS/Canvas). Goal: fast browser prototype for Threshiator; future port to G’MIC/Krita. (Replaces Python-scaffold focus.)
 
 ---
 
@@ -298,7 +298,7 @@ Record significant changes affecting behavior, scope, interfaces, infra, or deve
 - Details:
   - Added PNG tEXt chunk manipulation with CRC32 validation
   - Built `embedMetadataInPng()` and `extractMetadataFromPng()` functions
-  - Created "Save Image" functionality with embedded SuperPosterize settings
+  - Created "Save Image" functionality with embedded Threshiator settings
   - Enhanced Import Settings to handle both JSON and PNG files
   - Implemented manifest-based preset system (`/presets/manifest.json`)
   - Added support for user-extensible presets without code modifications
@@ -395,7 +395,7 @@ Record significant changes affecting behavior, scope, interfaces, infra, or deve
 - Type: feat
 - Summary: Added buttons to save or load the current posterize configuration as JSON.
 - Details:
-  - Serialized channel levels, thresholds, outputs, and lock state to `SuperPosterSettings.json`
+  - Serialized channel levels, thresholds, outputs, and lock state to `ThreshiatorSettings.json`
   - Added file loader to restore settings without disturbing the active image
 - Impact: Enables sharing looks and restoring complex setups quickly.
 
@@ -434,7 +434,7 @@ Record significant changes affecting behavior, scope, interfaces, infra, or deve
 ## Scope
 
 - In scope:
-  - Browser-based prototype of Super Posterize (HTML/JS/Canvas/WebGL)
+  - Browser-based prototype of Threshiator (HTML/JS/Canvas/WebGL)
   - Open-source dev tooling (Vite, ESLint, Prettier, Vitest)
 
 - Out of scope:
@@ -445,7 +445,7 @@ Record significant changes affecting behavior, scope, interfaces, infra, or deve
 
 ## Backlog
 
-1. **Prototype**: Implement CPU canvas version of Super Posterize (per-channel levels, widths, band level, per-band hue).
+1. **Prototype**: Implement CPU canvas version of Threshiator (per-channel levels, widths, band level, per-band hue).
 2. **Histograms**: Live RGB histograms with band separators; show clipping overlay toggle.
 3. **Presets**: Flat / Punchy / 80s Comic / Duo-Tone (JSON).
 4. **Lock-Channels**: Mirror band edits across channels when enabled.

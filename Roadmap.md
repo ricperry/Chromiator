@@ -1,4 +1,4 @@
-# Roadmap for Super Posterize Prototype
+# Roadmap for Threshiator Prototype
 
 ## ✅ Completed Features (Phase 1)
 
@@ -16,7 +16,7 @@
 ### PNG Metadata System
 
 - ✅ **PNG metadata embedding** using tEXt chunks (ComfyUI-style)
-- ✅ **Save Image functionality** with embedded SuperPosterize settings
+- ✅ **Save Image functionality** with embedded Threshiator settings
 - ✅ **Import from PNG** - load settings directly from saved images
 - ✅ **CRC32 validation** for data integrity
 - ✅ **Dual format support** for both JSON and PNG imports

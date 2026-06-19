@@ -1,6 +1,6 @@
-# Super Posterize Prototype
+# Threshiator Prototype
 
-A browser-based laboratory for exploring the "Super Posterize" effect with advanced PNG metadata embedding capabilities. This prototype focuses on fast iteration for posterization workflows with live histograms, per-channel thresholds, and per-band tonal controls across multiple color spaces. The goal is to nail the feel of the core effect in the browser before porting the logic to other hosts such as G'MIC or Krita.
+A browser-based laboratory for exploring the "Threshiator" effect with advanced PNG metadata embedding capabilities. This prototype focuses on fast iteration for posterization workflows with live histograms, per-channel thresholds, and per-band tonal controls across multiple color spaces. The goal is to nail the feel of the core effect in the browser before porting the logic to other hosts such as G'MIC or Krita.
 
 ## Features
 
@@ -17,8 +17,8 @@ A browser-based laboratory for exploring the "Super Posterize" effect with advan
 
 ### PNG Metadata System
 
-- **Save Image with embedded settings** – Export processed images as PNG files with SuperPosterize settings embedded as metadata chunks (similar to ComfyUI workflows).
-- **Import settings from PNG** – Load SuperPosterize settings directly from PNG files created by the application.
+- **Save Image with embedded settings** – Export processed images as PNG files with Threshiator settings embedded as metadata chunks (similar to ComfyUI workflows).
+- **Import settings from PNG** – Load Threshiator settings directly from PNG files created by the application.
 - **ComfyUI-style workflow embedding** – Settings are stored in PNG tEXt chunks for maximum compatibility and shareability.
 
 ### Preset Management
@@ -31,7 +31,7 @@ A browser-based laboratory for exploring the "Super Posterize" effect with advan
 ### File Support
 
 - **Import/Export JSON settings** – Save and load posterize configurations as JSON files.
-- **PNG preset discovery** – Automatically loads PNG files with embedded SuperPosterize metadata.
+- **PNG preset discovery** – Automatically loads PNG files with embedded Threshiator metadata.
 - **Dual format support** – Seamlessly handles both JSON and PNG preset formats.
 - **Sample image + file loader** – The app boots with `test.png` for quick testing and also supports loading your own images through the file picker.
 
@@ -106,7 +106,7 @@ PNG presets appear with a 📁 folder icon in the dropdown.
 
 ### PNG Metadata Implementation
 
-- **PNG tEXt chunks** store JSON settings with keyword "SuperPosterize"
+- **PNG tEXt chunks** store JSON settings with keyword "Threshiator"
 - **CRC32 validation** ensures data integrity
 - **ComfyUI-compatible** metadata embedding approach
 - **Fallback handling** for PNGs without metadata
