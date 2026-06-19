@@ -1,0 +1,10 @@
+{
+  "jsonPresets": [
+    "Comic_Book.json",
+    "Duotone_Blue.json",
+    "Vintage_Photo.json",
+    "Noir.json",
+    "Pop_Art.json"
+  ],
+  "pngPresets": ["BloodySunday.png"]
+}

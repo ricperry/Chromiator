@@ -1,0 +1,25 @@
+{
+  "name": "Noir",
+  "description": "Dramatic black and white with deep shadows",
+  "settings": {
+    "version": 1,
+    "lockChannels": true,
+    "channels": {
+      "red": {
+        "levels": 4,
+        "thresholds": [64, 128, 192],
+        "outputs": [0, 85, 170, 255]
+      },
+      "green": {
+        "levels": 4,
+        "thresholds": [64, 128, 192],
+        "outputs": [0, 85, 170, 255]
+      },
+      "blue": {
+        "levels": 4,
+        "thresholds": [64, 128, 192],
+        "outputs": [0, 85, 170, 255]
+      }
+    }
+  }
+}

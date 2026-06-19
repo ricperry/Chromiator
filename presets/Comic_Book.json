@@ -1,0 +1,25 @@
+{
+  "name": "Comic Book",
+  "description": "High contrast with limited colors for a classic comic book look",
+  "settings": {
+    "version": 1,
+    "lockChannels": true,
+    "channels": {
+      "red": {
+        "levels": 3,
+        "thresholds": [85, 170],
+        "outputs": [0, 128, 255]
+      },
+      "green": {
+        "levels": 3,
+        "thresholds": [85, 170],
+        "outputs": [0, 128, 255]
+      },
+      "blue": {
+        "levels": 3,
+        "thresholds": [85, 170],
+        "outputs": [0, 128, 255]
+      }
+    }
+  }
+}

@@ -1,0 +1,36 @@
+{
+  // --- Editor Behavior ---
+  "editor.formatOnSave": true,
+  "editor.codeActionsOnSave": {
+    "source.fixAll.eslint": "always",
+    "source.organizeImports": "always"
+  },
+  "editor.defaultFormatter": "esbenp.prettier-vscode",
+
+  // --- Files & Formatting ---
+  "files.eol": "\n",
+  "files.insertFinalNewline": true,
+  "files.trimTrailingWhitespace": true,
+
+  // --- TypeScript/JavaScript ---
+  "typescript.tsdk": "node_modules/typescript/lib",
+  "typescript.preferences.importModuleSpecifier": "non-relative",
+  "javascript.preferences.importModuleSpecifier": "non-relative",
+  "typescript.validate.enable": true,
+  "javascript.validate.enable": true,
+
+  // --- Linting & Prettier ---
+  "eslint.enable": true,
+  "eslint.run": "onType",
+  "eslint.alwaysShowStatus": true,
+  "prettier.requireConfig": true,
+
+  // --- Testing ---
+  "vitest.commandLine": "npm run test",
+  "vitest.autoRun": "off", // run tests manually when wanted
+
+  // --- UI / Convenience ---
+  "workbench.colorTheme": "Dark+",
+  "explorer.compactFolders": false,
+  "editor.tabSize": 2
+}

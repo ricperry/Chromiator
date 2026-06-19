@@ -1,0 +1,25 @@
+{
+  "name": "Duotone Blue",
+  "description": "Dramatic two-tone effect with deep blacks and blue highlights",
+  "settings": {
+    "version": 1,
+    "lockChannels": false,
+    "channels": {
+      "red": {
+        "levels": 2,
+        "thresholds": [128],
+        "outputs": [0, 0]
+      },
+      "green": {
+        "levels": 2,
+        "thresholds": [128],
+        "outputs": [0, 0]
+      },
+      "blue": {
+        "levels": 2,
+        "thresholds": [128],
+        "outputs": [0, 255]
+      }
+    }
+  }
+}

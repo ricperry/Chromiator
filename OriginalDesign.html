@@ -1,0 +1,1114 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Super Posterize — UI Mock</title>
+    <style>
+      :root {
+        --bg: #0f1115;
+        --panel: #151923;
+        --muted: #9aa4b2;
+        --text: #e6ebf2;
+        --accent: #6ea8ff;
+        --accent-2: #8e79ff;
+        --ok: #2ecc71;
+        --warn: #ffb84d;
+        --danger: #ff6b6b;
+        --stroke: #222738;
+        --chip: #1b2030;
+        --chip-hi: #232a3d;
+        --shadow: 0 10px 30px rgba(0, 0, 0, 0.35);
+        --radius: 14px;
+        --radius-sm: 10px;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      html,
+      body {
+        height: 100%;
+      }
+      body {
+        margin: 0;
+        color: var(--text);
+        background:
+          radial-gradient(1200px 800px at 20% -10%, #1a2030 0%, #0d0f15 60%),
+          var(--bg);
+        font:
+          15px/1.5 system-ui,
+          -apple-system,
+          Segoe UI,
+          Roboto,
+          Ubuntu,
+          Cantarell,
+          "Helvetica Neue",
+          Arial,
+          "Noto Sans",
+          "Apple Color Emoji",
+          "Segoe UI Emoji";
+      }
+      .app {
+        max-width: 1280px;
+        margin: 28px auto 60px;
+        padding: 0 20px;
+      }
+
+      /* Header */
+      .header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        margin-bottom: 18px;
+      }
+      .title {
+        display: flex;
+        align-items: center;
+        gap: 14px;
+      }
+      .badge {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        background: linear-gradient(
+          135deg,
+          var(--chip) 0%,
+          var(--chip-hi) 100%
+        );
+        padding: 8px 12px;
+        border-radius: 999px;
+        border: 1px solid var(--stroke);
+        color: var(--muted);
+        font-weight: 600;
+        letter-spacing: 0.2px;
+      }
+      .title h1 {
+        margin: 0;
+        font-size: 20px;
+        letter-spacing: 0.2px;
+      }
+      .actions {
+        display: flex;
+        gap: 10px;
+      }
+      button,
+      .ghost {
+        all: unset;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        gap: 8px;
+        padding: 10px 14px;
+        border-radius: 10px;
+        cursor: pointer;
+        user-select: none;
+        border: 1px solid var(--stroke);
+        background: linear-gradient(180deg, #182032, #121827);
+        box-shadow: var(--shadow);
+      }
+      .primary {
+        border-color: #2a3b66;
+        background: linear-gradient(180deg, #2b3f66, #223457);
+      }
+      .primary:hover {
+        filter: brightness(1.08);
+      }
+      .ghost:hover {
+        background: #171d2b;
+      }
+      .danger {
+        border-color: #5a2121;
+        background: linear-gradient(180deg, #6b1f1f, #411616);
+      }
+      .danger:hover {
+        filter: brightness(1.05);
+      }
+
+      /* Layout */
+      .grid {
+        display: grid;
+        grid-template-columns: 1.2fr 1fr;
+        gap: 18px;
+      }
+      .card {
+        background: linear-gradient(180deg, #121827, #0f1420);
+        border: 1px solid var(--stroke);
+        border-radius: var(--radius);
+        box-shadow: var(--shadow);
+        overflow: hidden;
+      }
+      .card .hd {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 14px 16px;
+        border-bottom: 1px solid var(--stroke);
+        background: #121726cc;
+      }
+      .hd h2 {
+        margin: 0;
+        font-size: 14px;
+        text-transform: uppercase;
+        letter-spacing: 0.22em;
+        color: #b7c2d6;
+      }
+      .content {
+        padding: 16px;
+      }
+      .row {
+        display: flex;
+        gap: 12px;
+        align-items: center;
+      }
+      .row + .row {
+        margin-top: 12px;
+      }
+
+      /* Preview panel */
+      .previewWrap {
+        display: grid;
+        grid-template-rows: auto auto;
+        gap: 12px;
+      }
+      .preview {
+        position: relative;
+        aspect-ratio: 16/10;
+        border-radius: var(--radius);
+        overflow: hidden;
+        border: 1px solid var(--stroke);
+        background:
+          linear-gradient(135deg, #2c354c 0%, #1c2437 60%),
+          radial-gradient(
+            1400px 800px at 80% 110%,
+            rgba(142, 121, 255, 0.22),
+            transparent 60%
+          ),
+          radial-gradient(
+            1200px 800px at -10% 10%,
+            rgba(110, 168, 255, 0.18),
+            transparent 60%
+          );
+      }
+      .preview::after {
+        /* Placeholder checkerboard */
+        content: "";
+        position: absolute;
+        inset: 0;
+        opacity: 0.2;
+        background: conic-gradient(#fff 0 25%, #000 0 50%, #fff 0 75%, #000 0) 0
+          0 / 20px 20px;
+        mix-blend-mode: overlay;
+        pointer-events: none;
+      }
+      .previewTools {
+        display: flex;
+        gap: 10px;
+        flex-wrap: wrap;
+      }
+      .chip {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        padding: 8px 10px;
+        border-radius: 8px;
+        border: 1px solid var(--stroke);
+        background: #151b2a;
+        color: var(--muted);
+      }
+      .chip input[type="checkbox"] {
+        accent-color: var(--accent);
+      }
+
+      /* Histogram */
+      .histos {
+        display: grid;
+        grid-template-columns: 1fr;
+        gap: 10px;
+      }
+      .histoRow {
+        display: grid;
+        grid-template-columns: 70px 1fr 70px;
+        gap: 8px;
+        align-items: center;
+      }
+      .histoRow canvas {
+        width: 100%;
+        height: 64px;
+        background: #0d1120;
+        border: 1px solid var(--stroke);
+        border-radius: 10px;
+      }
+      .histoLabel {
+        color: var(--muted);
+        text-align: right;
+      }
+      .histoChip {
+        text-align: center;
+        color: #c7d2ea;
+        border: 1px solid var(--stroke);
+        background: #151b2a;
+        border-radius: 10px;
+        padding: 6px 8px;
+        font-weight: 700;
+      }
+
+      /* Channel tabs */
+      .tabs {
+        display: flex;
+        gap: 8px;
+        margin-bottom: 12px;
+      }
+      .tab {
+        all: unset;
+        cursor: pointer;
+        padding: 10px 12px;
+        border-radius: 999px;
+        background: #151b2a;
+        border: 1px solid var(--stroke);
+        color: #c6d2e6;
+        font-weight: 600;
+      }
+      .tab[data-active="true"] {
+        color: #fff;
+        background: linear-gradient(180deg, #2b3f66, #223457);
+        border-color: #2a3b66;
+      }
+
+      /* Controls */
+      .gridControls {
+        display: grid;
+        gap: 12px;
+        grid-template-columns: repeat(12, 1fr);
+      }
+      .control {
+        grid-column: span 12;
+        background: #121827;
+        border: 1px solid var(--stroke);
+        border-radius: 12px;
+        padding: 12px;
+      }
+      .control h3 {
+        margin: 0 0 6px;
+        font-size: 13px;
+        color: #c6d2e6;
+        letter-spacing: 0.08em;
+      }
+      .control small {
+        color: var(--muted);
+      }
+      .split2 {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 10px;
+      }
+      .split3 {
+        display: grid;
+        grid-template-columns: 1fr 1fr 1fr;
+        gap: 10px;
+      }
+      .inline {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+      }
+      .pill {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        padding: 8px 10px;
+        border-radius: 999px;
+        background: #151b2a;
+        border: 1px solid var(--stroke);
+        color: #c6d2e6;
+        font-weight: 600;
+      }
+      label {
+        display: block;
+        font-weight: 600;
+        color: #c6d2e6;
+        margin-bottom: 6px;
+      }
+      input[type="range"] {
+        width: 100%;
+      }
+      input[type="number"],
+      select {
+        width: 100%;
+        background: #0f1422;
+        color: var(--text);
+        border: 1px solid var(--stroke);
+        padding: 8px 10px;
+        border-radius: 8px;
+      }
+      .bandList {
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+        margin-top: 6px;
+      }
+      .band {
+        border: 1px dashed #24304a;
+        border-radius: 10px;
+        padding: 10px;
+        background: #0f1526;
+      }
+      .bandHdr {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+        margin-bottom: 8px;
+      }
+      .bandHdr .swatch {
+        width: 22px;
+        height: 22px;
+        border-radius: 6px;
+        border: 1px solid var(--stroke);
+        background: #243153;
+      }
+      .kv {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        color: var(--muted);
+      }
+      .mini {
+        display: grid;
+        grid-template-columns: 1.1fr 1.1fr 1.3fr;
+        gap: 8px;
+      }
+      .mini .field {
+        background: #11192a;
+        border: 1px solid var(--stroke);
+        border-radius: 8px;
+        padding: 8px;
+      }
+      .field .val {
+        font-weight: 700;
+        color: #d7e2f5;
+      }
+      .rowControls {
+        display: grid;
+        grid-template-columns: 1fr 1fr 1fr;
+        gap: 10px;
+      }
+      .hint {
+        color: var(--muted);
+        font-size: 12px;
+      }
+      .footerActions {
+        display: flex;
+        justify-content: flex-end;
+        gap: 10px;
+        margin-top: 14px;
+      }
+      .switch {
+        appearance: none;
+        width: 42px;
+        height: 24px;
+        background: #1a2236;
+        border-radius: 999px;
+        position: relative;
+        border: 1px solid var(--stroke);
+        cursor: pointer;
+      }
+      .switch:checked {
+        background: #2f4b8b;
+      }
+      .switch::after {
+        content: "";
+        position: absolute;
+        top: 2px;
+        left: 2px;
+        width: 20px;
+        height: 20px;
+        background: #fff;
+        border-radius: 50%;
+        transition: transform 0.18s ease;
+      }
+      .switch:checked::after {
+        transform: translateX(18px);
+      }
+
+      .presets {
+        display: flex;
+        gap: 8px;
+        flex-wrap: wrap;
+      }
+      .preset {
+        all: unset;
+        cursor: pointer;
+        padding: 8px 10px;
+        border-radius: 8px;
+        border: 1px solid var(--stroke);
+        background: #151b2a;
+        color: #c6d2e6;
+      }
+      .preset:hover {
+        background: #1a2236;
+      }
+      .muted {
+        color: var(--muted);
+      }
+      .sr-only {
+        position: absolute !important;
+        width: 1px;
+        height: 1px;
+        padding: 0;
+        margin: -1px;
+        overflow: hidden;
+        clip: rect(0, 0, 0, 0);
+        white-space: nowrap;
+        border: 0;
+      }
+    </style>
+  </head>
+  <body>
+    <div
+      class="app"
+      role="application"
+      aria-label="Super Posterize Filter UI Mock"
+    >
+      <div class="header">
+        <div class="title">
+          <span class="badge">🖼️ Super Posterize</span>
+          <h1>Histogram-guided, per-channel band controls</h1>
+        </div>
+        <div class="actions" role="toolbar" aria-label="Primary actions">
+          <button class="ghost" id="btnReset" title="Reset all controls (R)">
+            ↺ Reset
+          </button>
+          <button
+            class="primary"
+            id="btnApply"
+            title="Apply current settings (Enter)"
+          >
+            Apply
+          </button>
+        </div>
+      </div>
+
+      <div class="grid">
+        <!-- LEFT: Preview + Histograms -->
+        <section class="card" aria-labelledby="preview-h">
+          <div class="hd">
+            <h2 id="preview-h">Preview</h2>
+            <div class="previewTools">
+              <span class="chip"
+                ><input type="checkbox" id="chkLive" checked /><label
+                  for="chkLive"
+                  >Live update</label
+                ></span
+              >
+              <span class="chip"
+                ><input type="checkbox" id="chkSplit" checked /><label
+                  for="chkSplit"
+                  >Split view</label
+                ></span
+              >
+              <span class="chip"
+                ><input type="checkbox" id="chkClip" /><label for="chkClip"
+                  >Show clipping</label
+                ></span
+              >
+            </div>
+          </div>
+          <div class="content">
+            <div class="previewWrap">
+              <div
+                class="preview"
+                aria-label="Image preview (placeholder)"
+              ></div>
+
+              <div class="histos" aria-label="Channel histograms">
+                <div class="histoRow">
+                  <div class="histoLabel">Red</div>
+                  <canvas id="histR" height="64"></canvas>
+                  <div class="histoChip" id="chipR">Levels: 4</div>
+                </div>
+                <div class="histoRow">
+                  <div class="histoLabel">Green</div>
+                  <canvas id="histG" height="64"></canvas>
+                  <div class="histoChip" id="chipG">Levels: 4</div>
+                </div>
+                <div class="histoRow">
+                  <div class="histoLabel">Blue</div>
+                  <canvas id="histB" height="64"></canvas>
+                  <div class="histoChip" id="chipB">Levels: 4</div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- RIGHT: Controls -->
+        <section class="card" aria-labelledby="controls-h">
+          <div class="hd">
+            <h2 id="controls-h">Controls</h2>
+            <div class="presets" aria-label="Presets">
+              <button class="preset" data-preset="flat">Flat</button>
+              <button class="preset" data-preset="pop">Punchy</button>
+              <button class="preset" data-preset="80s">80s Comic</button>
+              <button class="preset" data-preset="duo">Duo-Tone</button>
+            </div>
+          </div>
+          <div class="content">
+            <!-- Channel Tabs -->
+            <div class="tabs" role="tablist" aria-label="Channels">
+              <button
+                class="tab"
+                role="tab"
+                aria-selected="true"
+                data-tab="R"
+                data-active="true"
+              >
+                Red
+              </button>
+              <button class="tab" role="tab" aria-selected="false" data-tab="G">
+                Green
+              </button>
+              <button class="tab" role="tab" aria-selected="false" data-tab="B">
+                Blue
+              </button>
+              <span class="pill" title="Lock channels"
+                ><input
+                  class="switch"
+                  id="lockChannels"
+                  type="checkbox"
+                  aria-label="Lock channels"
+                />&nbsp;Lock</span
+              >
+            </div>
+
+            <!-- Per-Channel Control Panels -->
+            <div
+              id="panelR"
+              class="gridControls"
+              role="region"
+              aria-labelledby="tabR"
+            >
+              <div class="control split3">
+                <div>
+                  <h3>Threshold levels</h3>
+                  <label class="sr-only" for="levelsR">Levels</label>
+                  <input
+                    id="levelsR"
+                    type="range"
+                    min="1"
+                    max="12"
+                    step="1"
+                    value="4"
+                  />
+                  <small><span id="levelsRVal">4</span> bands</small>
+                </div>
+                <div>
+                  <h3>Auto width balance</h3>
+                  <label class="sr-only" for="autoWidthR">Auto width</label>
+                  <input
+                    id="autoWidthR"
+                    type="range"
+                    min="0"
+                    max="100"
+                    value="60"
+                  />
+                  <small>0 = manual, 100 = equal</small>
+                </div>
+                <div class="inline">
+                  <h3 style="margin: 0">Clamp edges</h3>
+                  <input
+                    class="switch"
+                    id="clampR"
+                    type="checkbox"
+                    aria-label="Clamp band edges"
+                  />
+                </div>
+              </div>
+
+              <div class="control">
+                <h3>Band editor</h3>
+                <div class="hint">
+                  Adjust <b>Width</b> (threshold span), output <b>Level</b>, and
+                  <b>Hue Rotate</b> for each band.
+                </div>
+                <div id="bandsR" class="bandList" aria-live="polite"></div>
+              </div>
+            </div>
+
+            <div id="panelG" class="gridControls" hidden role="region">
+              <div class="control split3">
+                <div>
+                  <h3>Threshold levels</h3>
+                  <input
+                    id="levelsG"
+                    type="range"
+                    min="1"
+                    max="12"
+                    step="1"
+                    value="4"
+                  />
+                  <small><span id="levelsGVal">4</span> bands</small>
+                </div>
+                <div>
+                  <h3>Auto width balance</h3>
+                  <input
+                    id="autoWidthG"
+                    type="range"
+                    min="0"
+                    max="100"
+                    value="60"
+                  />
+                  <small>0 = manual, 100 = equal</small>
+                </div>
+                <div class="inline">
+                  <h3 style="margin: 0">Clamp edges</h3>
+                  <input
+                    class="switch"
+                    id="clampG"
+                    type="checkbox"
+                    aria-label="Clamp band edges"
+                  />
+                </div>
+              </div>
+              <div class="control">
+                <h3>Band editor</h3>
+                <div class="hint">Green channel bands.</div>
+                <div id="bandsG" class="bandList" aria-live="polite"></div>
+              </div>
+            </div>
+
+            <div id="panelB" class="gridControls" hidden role="region">
+              <div class="control split3">
+                <div>
+                  <h3>Threshold levels</h3>
+                  <input
+                    id="levelsB"
+                    type="range"
+                    min="1"
+                    max="12"
+                    step="1"
+                    value="4"
+                  />
+                  <small><span id="levelsBVal">4</span> bands</small>
+                </div>
+                <div>
+                  <h3>Auto width balance</h3>
+                  <input
+                    id="autoWidthB"
+                    type="range"
+                    min="0"
+                    max="100"
+                    value="60"
+                  />
+                  <small>0 = manual, 100 = equal</small>
+                </div>
+                <div class="inline">
+                  <h3 style="margin: 0">Clamp edges</h3>
+                  <input
+                    class="switch"
+                    id="clampB"
+                    type="checkbox"
+                    aria-label="Clamp band edges"
+                  />
+                </div>
+              </div>
+              <div class="control">
+                <h3>Band editor</h3>
+                <div class="hint">Blue channel bands.</div>
+                <div id="bandsB" class="bandList" aria-live="polite"></div>
+              </div>
+            </div>
+
+            <div class="footerActions">
+              <span class="muted"
+                >Tip: Hold <kbd>Alt</kbd> while dragging to fine-tune.</span
+              >
+            </div>
+          </div>
+        </section>
+      </div>
+    </div>
+
+    <script>
+      /* --------- Tiny state + helpers (mock only) --------- */
+      const state = {
+        lock: false,
+        channels: {
+          R: { levels: 4, autoWidth: 60, clamp: false, bands: [] },
+          G: { levels: 4, autoWidth: 60, clamp: false, bands: [] },
+          B: { levels: 4, autoWidth: 60, clamp: false, bands: [] },
+        },
+      };
+
+      function generateBands(n) {
+        const bands = [];
+        for (let i = 0; i < n; i++) {
+          bands.push({
+            width: Math.round(100 / n),
+            level: Math.round((i + 1) * (100 / (n + 1))),
+            hue: 0,
+          });
+        }
+        return bands;
+      }
+
+      function ensureBands(chan) {
+        const c = state.channels[chan];
+        if (!c.bands || c.bands.length !== c.levels) {
+          c.bands = generateBands(c.levels);
+        }
+      }
+
+      function $(sel, root = document) {
+        return root.querySelector(sel);
+      }
+      function $all(sel, root = document) {
+        return Array.from(root.querySelectorAll(sel));
+      }
+
+      /* --------- Histogram placeholder drawing --------- */
+      function drawHisto(id, hue) {
+        const cv = document.getElementById(id);
+        const ctx = cv.getContext("2d");
+        const w = (cv.width = cv.clientWidth * devicePixelRatio);
+        const h = (cv.height = cv.clientHeight * devicePixelRatio);
+
+        // background
+        ctx.fillStyle = "#0b0f1a";
+        ctx.fillRect(0, 0, w, h);
+
+        // fake bars
+        const bars = 48;
+        for (let i = 0; i < bars; i++) {
+          const x = (i / bars) * w;
+          const v =
+            0.2 + 0.8 * Math.abs(Math.sin(i * 0.33) * Math.cos(i * 0.17));
+          const barH = v * (h * 0.92);
+          const grad = ctx.createLinearGradient(0, h - barH, 0, h);
+          grad.addColorStop(0, `hsl(${hue},85%,70%)`);
+          grad.addColorStop(1, `hsl(${hue},65%,35%)`);
+          ctx.fillStyle = grad;
+          ctx.fillRect(x + 2, h - barH, w / bars - 4, barH);
+        }
+
+        // stripes for bands
+        const chan = id.endsWith("R") ? "R" : id.endsWith("G") ? "G" : "B";
+        ensureBands(chan);
+        const bands = state.channels[chan].bands;
+        let x = 0;
+        bands.forEach((b, i) => {
+          const bw = (b.width / 100) * w;
+          ctx.strokeStyle = "rgba(255,255,255,.35)";
+          ctx.setLineDash([6, 6]);
+          ctx.lineWidth = 2 * devicePixelRatio;
+          ctx.beginPath();
+          ctx.moveTo(x + bw, 0);
+          ctx.lineTo(x + bw, h);
+          ctx.stroke();
+          ctx.setLineDash([]);
+          x += bw;
+        });
+      }
+
+      /* --------- UI builders --------- */
+      function bandRowTemplate(chan, index) {
+        const c = state.channels[chan];
+        const b = c.bands[index];
+
+        const el = document.createElement("div");
+        el.className = "band";
+        el.innerHTML = `
+    <div class="bandHdr">
+      <div class="row">
+        <div class="swatch" style="background: linear-gradient(90deg, hsl(${(index * 40) % 360} 70% 55%), hsl(${((index + 1) * 40) % 360} 80% 45%))"></div>
+        <div class="kv"><strong>Band ${index + 1}</strong><span class="muted">(${chan})</span></div>
+      </div>
+      <div class="mini">
+        <div class="field"><div class="muted">Width</div><div class="val"><span data-bind="width">${b.width}</span>%</div></div>
+        <div class="field"><div class="muted">Level</div><div class="val"><span data-bind="level">${b.level}</span>%</div></div>
+        <div class="field"><div class="muted">Hue</div><div class="val"><span data-bind="hue">${b.hue}</span>°</div></div>
+      </div>
+    </div>
+    <div class="rowControls">
+      <div>
+        <label for="w_${chan}_${index}">Threshold width</label>
+        <input id="w_${chan}_${index}" type="range" min="1" max="100" value="${b.width}" />
+      </div>
+      <div>
+        <label for="l_${chan}_${index}">Output level</label>
+        <input id="l_${chan}_${index}" type="range" min="0" max="100" value="${b.level}" />
+      </div>
+      <div>
+        <label for="h_${chan}_${index}">Hue rotation</label>
+        <input id="h_${chan}_${index}" type="range" min="-180" max="180" value="${b.hue}" />
+      </div>
+    </div>
+  `;
+
+        // Wire sliders
+        const updateChip = () => {
+          el.querySelector('[data-bind="width"]').textContent =
+            c.bands[index].width;
+          el.querySelector('[data-bind="level"]').textContent =
+            c.bands[index].level;
+          el.querySelector('[data-bind="hue"]').textContent =
+            c.bands[index].hue;
+        };
+
+        el.querySelector(`#w_${chan}_${index}`).addEventListener(
+          "input",
+          (e) => {
+            c.bands[index].width = +e.target.value;
+            if (state.lock) {
+              mirrorBand("width", index, c.bands[index].width, chan);
+            }
+            updateChip();
+            refreshHistos();
+          },
+        );
+        el.querySelector(`#l_${chan}_${index}`).addEventListener(
+          "input",
+          (e) => {
+            c.bands[index].level = +e.target.value;
+            if (state.lock) {
+              mirrorBand("level", index, c.bands[index].level, chan);
+            }
+            updateChip();
+          },
+        );
+        el.querySelector(`#h_${chan}_${index}`).addEventListener(
+          "input",
+          (e) => {
+            c.bands[index].hue = +e.target.value;
+            if (state.lock) {
+              mirrorBand("hue", index, c.bands[index].hue, chan);
+            }
+            updateChip();
+          },
+        );
+
+        return el;
+      }
+
+      function renderChannel(chan) {
+        const levelsEl = $(`#levels${chan}`);
+        const autoEl = $(`#autoWidth${chan}`);
+        const clampEl = $(`#clamp${chan}`);
+        const bandsEl = $(`#bands${chan}`);
+        const chip = $(`#chip${chan}`);
+
+        const c = state.channels[chan];
+        levelsEl.value = c.levels;
+        autoEl.value = c.autoWidth;
+        clampEl.checked = c.clamp;
+        ensureBands(chan);
+
+        // Normalize widths if autoWidth high-ish (mock behavior)
+        if (c.autoWidth >= 90) {
+          const equal = Math.floor(100 / c.levels);
+          c.bands.forEach((b) => (b.width = equal));
+        }
+
+        // (Optional) soft-normalize to sum 100
+        const sum = c.bands.map((b) => b.width).reduce((a, b) => a + b, 0);
+        if (sum !== 100) {
+          const scale = 100 / sum;
+          c.bands.forEach(
+            (b) => (b.width = Math.max(1, Math.round(b.width * scale))),
+          );
+          // final fix for rounding drift
+          let diff = 100 - c.bands.reduce((a, b) => a + b.width, 0);
+          let i = 0;
+          while (diff !== 0 && i < c.bands.length) {
+            c.bands[i].width += diff > 0 ? 1 : -1;
+            diff += diff > 0 ? -1 : +1;
+            i = (i + 1) % c.bands.length;
+          }
+        }
+
+        // Render bands
+        bandsEl.innerHTML = "";
+        c.bands.forEach((_, i) =>
+          bandsEl.appendChild(bandRowTemplate(chan, i)),
+        );
+
+        // Header chips
+        chip.textContent = `Levels: ${c.levels}`;
+      }
+
+      function changeLevels(chan, val) {
+        const c = state.channels[chan];
+        c.levels = val;
+        c.bands = generateBands(c.levels);
+        if (state.lock) {
+          mirrorLevels(val, chan);
+        }
+        renderChannel(chan);
+        refreshHistos();
+      }
+
+      /* Lock/mirror logic */
+      function mirrorLevels(val, sourceChan) {
+        ["R", "G", "B"].forEach((ch) => {
+          if (ch !== sourceChan) {
+            state.channels[ch].levels = val;
+            state.channels[ch].bands = generateBands(val);
+            renderChannel(ch);
+          }
+        });
+      }
+      function mirrorBand(key, idx, value, sourceChan) {
+        ["R", "G", "B"].forEach((ch) => {
+          if (ch !== sourceChan) {
+            const c = state.channels[ch];
+            if (!c.bands[idx]) return;
+            c.bands[idx][key] = value;
+            const bandsEl = $(`#bands${ch}`);
+            const row = bandsEl.children[idx];
+            if (!row) return;
+            row
+              .querySelector(
+                `[id^="${key === "width" ? "w" : "l"}_${ch}_${idx}"]`,
+              )
+              ?.setAttribute("value", value);
+            // update chips
+            row.querySelector(
+              `[data-bind="${key === "width" ? "width" : key === "level" ? "level" : "hue"}"]`,
+            ).textContent = value;
+          }
+        });
+      }
+
+      /* Tabs */
+      $all(".tab").forEach((tab) => {
+        tab.addEventListener("click", () => {
+          const t = tab.dataset.tab;
+          $all(".tab").forEach((b) => {
+            b.dataset.active = b === tab;
+            b.setAttribute("aria-selected", b === tab);
+          });
+          ["R", "G", "B"].forEach((ch) => {
+            const p = $(`#panel${ch}`);
+            p.hidden = ch !== t;
+          });
+        });
+      });
+
+      /* Global widgets */
+      $("#lockChannels").addEventListener("change", (e) => {
+        state.lock = e.target.checked;
+      });
+      $("#btnReset").addEventListener("click", () => {
+        state.channels.R = {
+          levels: 4,
+          autoWidth: 60,
+          clamp: false,
+          bands: generateBands(4),
+        };
+        state.channels.G = {
+          levels: 4,
+          autoWidth: 60,
+          clamp: false,
+          bands: generateBands(4),
+        };
+        state.channels.B = {
+          levels: 4,
+          autoWidth: 60,
+          clamp: false,
+          bands: generateBands(4),
+        };
+        ["R", "G", "B"].forEach(renderChannel);
+        refreshHistos();
+      });
+      $("#btnApply").addEventListener("click", () => {
+        // No-op in mock; feedback ping:
+        const btn = $("#btnApply");
+        const old = btn.textContent;
+        btn.textContent = "Applied ✓";
+        setTimeout(() => (btn.textContent = old), 900);
+      });
+
+      /* Per-channel listeners */
+      ["R", "G", "B"].forEach((ch) => {
+        $(`#levels${ch}`).addEventListener("input", (e) => {
+          $(`#levels${ch}Val`).textContent = e.target.value;
+          changeLevels(ch, +e.target.value);
+        });
+        $(`#autoWidth${ch}`).addEventListener("input", (e) => {
+          state.channels[ch].autoWidth = +e.target.value;
+          if (state.lock) {
+            ["R", "G", "B"].forEach((c) => {
+              if (c !== ch) state.channels[c].autoWidth = +e.target.value;
+            });
+          }
+          renderChannel(ch);
+          refreshHistos();
+        });
+        $(`#clamp${ch}`).addEventListener("change", (e) => {
+          state.channels[ch].clamp = e.target.checked;
+          if (state.lock) {
+            ["R", "G", "B"].forEach((c) => {
+              if (c !== ch) state.channels[c].clamp = e.target.checked;
+            });
+          }
+        });
+      });
+
+      /* Presets (mock behaviors) */
+      $all(".preset").forEach((p) => {
+        p.addEventListener("click", () => {
+          const name = p.dataset.preset;
+          const setFor = (ch, levels, hues) => {
+            const c = state.channels[ch];
+            c.levels = levels;
+            c.bands = generateBands(levels).map((b, i) => ({
+              width: Math.max(
+                6,
+                Math.round(100 / levels + Math.sin(i * 1.4) * 8),
+              ),
+              level: Math.round((i + 1) * (100 / (levels + 1))),
+              hue: hues ? hues[i % hues.length] : 0,
+            }));
+          };
+          if (name === "flat") {
+            ["R", "G", "B"].forEach((ch) => setFor(ch, 3, [0, 0, 0]));
+          }
+          if (name === "pop") {
+            ["R", "G", "B"].forEach((ch) => setFor(ch, 5, [0, 8, -6, 10, -4]));
+          }
+          if (name === "80s") {
+            ["R", "G", "B"].forEach((ch) =>
+              setFor(ch, 6, [30, 60, 90, 120, 150, 180]),
+            );
+          }
+          if (name === "duo") {
+            ["R", "G", "B"].forEach((ch) => setFor(ch, 2, [-20, 20]));
+          }
+          ["R", "G", "B"].forEach(renderChannel);
+          refreshHistos();
+        });
+      });
+
+      /* Initial render */
+      function refreshHistos() {
+        drawHisto("histR", 6);
+        drawHisto("histG", 130);
+        drawHisto("histB", 220);
+      }
+      ["R", "G", "B"].forEach((ch) => {
+        state.channels[ch].bands = generateBands(state.channels[ch].levels);
+        renderChannel(ch);
+      });
+      refreshHistos();
+
+      /* Keyboard affordances */
+      document.addEventListener("keydown", (e) => {
+        if (e.key === "r" || e.key === "R") {
+          $("#btnReset").click();
+        }
+        if (e.key === "Enter") {
+          $("#btnApply").click();
+        }
+      });
+    </script>
+  </body>
+</html>

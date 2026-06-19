@@ -1,0 +1,25 @@
+{
+  "name": "Vintage Photo",
+  "description": "Warm, sepia-toned effect reminiscent of old photographs",
+  "settings": {
+    "version": 1,
+    "lockChannels": false,
+    "channels": {
+      "red": {
+        "levels": 4,
+        "thresholds": [64, 128, 192],
+        "outputs": [112, 176, 240, 255]
+      },
+      "green": {
+        "levels": 4,
+        "thresholds": [64, 128, 192],
+        "outputs": [80, 144, 208, 224]
+      },
+      "blue": {
+        "levels": 4,
+        "thresholds": [64, 128, 192],
+        "outputs": [48, 112, 176, 192]
+      }
+    }
+  }
+}

@@ -1,0 +1,25 @@
+{
+  "name": "Pop Art",
+  "description": "Vibrant, high-contrast colors in pop art style",
+  "settings": {
+    "version": 1,
+    "lockChannels": false,
+    "channels": {
+      "red": {
+        "levels": 2,
+        "thresholds": [128],
+        "outputs": [255, 0]
+      },
+      "green": {
+        "levels": 2,
+        "thresholds": [128],
+        "outputs": [0, 255]
+      },
+      "blue": {
+        "levels": 2,
+        "thresholds": [128],
+        "outputs": [0, 255]
+      }
+    }
+  }
+}
