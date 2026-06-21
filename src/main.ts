@@ -2,9 +2,36 @@ import {
   applyAlphaPosterize,
   applyBasicPosterize,
   applyHsvPosterize,
+  hsv255ToRgb,
   rgbToHsv255,
 } from "./effect";
 import { PRESETS, type PresetEntry } from "./presets";
+import {
+  analyzeImageData,
+  completedSites,
+  computeBezierAssignments,
+  computeVoronoiAssignments,
+  createBezierNode,
+  createBezierRegion,
+  createQuantizationGroup,
+  createSite,
+  hexToRgb,
+  hsvCoordToRgb,
+  outputCoordFromRgb,
+  projectCoordToPanelPoint,
+  projectionForRegion,
+  projectionPanelsForSpace,
+  renderBezierImage,
+  renderVoronoiImage,
+  rgbToHex,
+  siteCoordFromRgb,
+  validRegionProjections,
+  type HsvSiteCoord,
+  type AnalyzedImage,
+  type BezierRegion,
+  type QuantizationGroup,
+  type RGB,
+} from "./quantization";
 import { drawImageToCanvas } from "./util";
 
 const sourceCanvas = document.getElementById(
@@ -15,8 +42,15 @@ const outputCanvas = document.getElementById(
   "processedCanvas",
 ) as HTMLCanvasElement | null;
 const outputCtx = outputCanvas?.getContext("2d") ?? null;
+const quantizerOverlayCanvas = document.getElementById(
+  "quantizerOverlayCanvas",
+) as HTMLCanvasElement | null;
+const quantizerOverlayCtx = quantizerOverlayCanvas?.getContext("2d") ?? null;
 const comparisonStage = document.getElementById(
   "comparisonStage",
+) as HTMLElement | null;
+const floatingModeToolbar = document.querySelector(
+  ".floating-mode-toolbar",
 ) as HTMLElement | null;
 const comparisonSlider = document.getElementById(
   "comparisonSlider",
@@ -96,11 +130,21 @@ export type ChannelSettings = {
 export type ExportSettings = {
   version: number;
   colorSpace?: ColorSpace;
+  processingMode?: ProcessingMode;
   smoothing?: number;
   lockChannels: boolean;
   posterizeAlpha?: boolean;
   alpha?: ChannelSettings;
   channels: Record<Channel, ChannelSettings>;
+  quantizer?: {
+    editMode?: VoronoiEditMode;
+    sampleRadius?: number;
+    groups: QuantizationGroup[];
+    activeGroupId: string;
+    activeSiteId: string | null;
+    regions: BezierRegion[];
+    activeRegionId: string | null;
+  };
 };
 
 const levelLabels: Record<UiChannel, HTMLInputElement | null> = {
@@ -117,18 +161,68 @@ const bandControlContainers: Record<UiChannel, HTMLElement | null> = {
   alpha: document.querySelector('.band-levels[data-channel="alpha"]'),
 };
 
+const controlsPane = document.querySelector(".controls-pane");
+const histogramsSection = document.getElementById("histograms");
 const lockToggle = document.getElementById(
   "lockChannelsToggle",
 ) as HTMLInputElement | null;
 const syncChannelsLabel = document.getElementById(
   "syncChannelsLabel",
 ) as HTMLSpanElement | null;
-const hueModeWarning = document.getElementById(
-  "hueModeWarning",
+const canvasStatusOverlay = document.getElementById(
+  "canvasStatusOverlay",
 ) as HTMLElement | null;
 const colorSpaceSelect = document.getElementById(
   "colorSpaceSelect",
 ) as HTMLSelectElement | null;
+const processingModeSelect = document.getElementById(
+  "processingModeSelect",
+) as HTMLSelectElement | null;
+const quantizerPanel = document.getElementById(
+  "quantizerPanel",
+) as HTMLElement | null;
+const quantizerTitle = document.getElementById(
+  "quantizerTitle",
+) as HTMLElement | null;
+const voronoiActions = document.getElementById(
+  "voronoiActions",
+) as HTMLElement | null;
+const bezierActions = document.getElementById(
+  "bezierActions",
+) as HTMLElement | null;
+const addQuantizerGroupBtn = document.getElementById(
+  "addQuantizerGroupBtn",
+) as HTMLButtonElement | null;
+const deleteQuantizerGroupBtn = document.getElementById(
+  "deleteQuantizerGroupBtn",
+) as HTMLButtonElement | null;
+const voronoiSourceModeBtn = document.getElementById(
+  "voronoiSourceModeBtn",
+) as HTMLButtonElement | null;
+const voronoiTargetModeBtn = document.getElementById(
+  "voronoiTargetModeBtn",
+) as HTMLButtonElement | null;
+const addBezierRegionBtn = document.getElementById(
+  "addBezierRegionBtn",
+) as HTMLButtonElement | null;
+const closeBezierRegionBtn = document.getElementById(
+  "closeBezierRegionBtn",
+) as HTMLButtonElement | null;
+const deleteBezierRegionBtn = document.getElementById(
+  "deleteBezierRegionBtn",
+) as HTMLButtonElement | null;
+const quantizerResetBtn = document.getElementById(
+  "quantizerResetBtn",
+) as HTMLButtonElement | null;
+const quantizerEditor = document.getElementById(
+  "quantizerEditor",
+) as HTMLElement | null;
+const quantizerList = document.getElementById(
+  "quantizerList",
+) as HTMLElement | null;
+const quantizerStats = document.getElementById(
+  "quantizerStats",
+) as HTMLElement | null;
 const smoothingInput = document.getElementById(
   "smoothingInput",
 ) as HTMLInputElement | null;
@@ -153,13 +247,50 @@ const settingsFileInput = document.getElementById(
 const presetsSelect = document.getElementById(
   "presetsSelect",
 ) as HTMLSelectElement | null;
-const presetDescription = document.querySelector(
-  ".preset-description",
-) as HTMLElement | null;
 let lockChannelsEnabled = false;
 let activeColorSpace: ColorSpace = "rgb";
 let posterizeAlphaEnabled = false;
 let smoothingAmount = 0;
+let floatingOverlayVisible = true;
+let activePresetDescription = "";
+type ProcessingMode = "threshold" | "voronoi" | "bezier";
+type VoronoiEditMode = "source" | "target";
+let activeProcessingMode: ProcessingMode = "voronoi";
+let activeVoronoiEditMode: VoronoiEditMode = "source";
+type EngineSettingsCache = {
+  colorSpace: ColorSpace;
+  smoothing: number;
+  posterizeAlpha: boolean;
+  lockChannels: boolean;
+};
+const engineSettingsCache: Partial<Record<ProcessingMode, EngineSettingsCache>> =
+  {
+    threshold: {
+      colorSpace: "rgb",
+      smoothing: 0,
+      posterizeAlpha: false,
+      lockChannels: false,
+    },
+    voronoi: {
+      colorSpace: "rgb",
+      smoothing: 0,
+      posterizeAlpha: false,
+      lockChannels: false,
+    },
+  };
+let quantizerGroups: QuantizationGroup[] = [
+  createQuantizationGroup("Index 1", { r: 0, g: 150, b: 255 }),
+];
+let activeQuantizerGroupId = quantizerGroups[0].id;
+let activeQuantizerSiteId: string | null = null;
+let bezierRegions: BezierRegion[] = [];
+let activeBezierRegionId: string | null = null;
+let quantizerRevision = 0;
+let voronoiSampleRadius = 1;
+let draggedImageSite: {
+  siteId: string;
+  pointerId: number;
+} | null = null;
 
 function channelLabelFor(channel: UiChannel, colorSpace: ColorSpace): string {
   if (channel === "alpha") return "Alpha Channel";
@@ -197,6 +328,9 @@ function isSyncableChannel(channel: UiChannel): channel is Channel {
 }
 
 function isVisibleWhenSynced(channel: UiChannel): boolean {
+  if (activeProcessingMode !== "threshold") {
+    return channel !== "alpha";
+  }
   if (channel === "alpha") return posterizeAlphaEnabled;
   if (!lockChannelsEnabled) return true;
   if (activeColorSpace === "hsv") {
@@ -228,9 +362,42 @@ function updateModeLabels() {
     syncChannelsLabel.textContent =
       activeColorSpace === "hsv" ? "Sync S/V" : "Sync RGB";
   }
-  if (hueModeWarning) {
-    hueModeWarning.hidden = activeColorSpace !== "hsv";
+  if (canvasStatusOverlay) {
+    const messages: string[] = [];
+    if (activePresetDescription && activeProcessingMode !== "voronoi") {
+      messages.push(activePresetDescription);
+    }
+    if (activeColorSpace === "hsv") {
+      messages.push(
+        "Hue uses 0-360 degree controls and is not synced with Saturation / Value.",
+      );
+    }
+    if (activeProcessingMode === "threshold") {
+      messages.push(
+        "Thresholds mode: drag vertical threshold lines and horizontal output handles in the channel graphs.",
+      );
+    } else if (activeProcessingMode === "voronoi") {
+      messages.push(
+        activeVoronoiEditMode === "source"
+          ? `Source mode: click the image to set the active source sample. Samples average a ${voronoiSampleRadius}px radius in the active space.`
+          : "Target mode: drag channel color bars to set the active index target color.",
+      );
+    } else if (activeProcessingMode === "bezier") {
+      messages.push(
+        "Click visible image pixels to add linked source boundary points. Drag channel histograms to set the active target color, then close the source region.",
+      );
+    }
+    canvasStatusOverlay.textContent = messages.join("  |  ");
+    canvasStatusOverlay.hidden =
+      !floatingOverlayVisible || messages.length === 0;
   }
+}
+
+function updateToolbarModeState() {
+  floatingModeToolbar?.classList.toggle(
+    "voronoi-toolbar",
+    activeProcessingMode === "voronoi",
+  );
 }
 
 function applyChannelTitles() {
@@ -272,6 +439,9 @@ function setColorSpace(
   const rerender = options.rerender ?? true;
   activeColorSpace = next;
   histogramCache = null;
+  if (activeProcessingMode === "voronoi") {
+    rehydrateVoronoiSitesForActiveColorSpace();
+  }
   if (colorSpaceSelect) colorSpaceSelect.value = next;
   updateModeLabels();
   applyChannelTitles();
@@ -282,8 +452,16 @@ function setColorSpace(
     localStorage.setItem(COLOR_SPACE_STORAGE_KEY, next);
   }
   if (rerender) {
+    activeQuantizerSiteId =
+      activeQuantizerGroup()?.sites.find(
+        (site) => site.colorSpace === activeColorSpace,
+      )?.id ?? null;
+    activeBezierRegionId =
+      bezierRegions.find((region) => region.colorSpace === activeColorSpace)
+        ?.id ?? null;
     updateAllHistograms();
     renderAllBandControls();
+    renderQuantizerControls();
     renderPosterized();
   }
 }
@@ -346,8 +524,39 @@ function setComparisonReveal(value: number) {
   }
 }
 
+function isTextEntryTarget(target: EventTarget | null): boolean {
+  if (!(target instanceof HTMLElement)) return false;
+  if (target.isContentEditable) return true;
+  const input = target.closest("input, select, textarea");
+  if (!input) return false;
+  if (input instanceof HTMLInputElement) {
+    return input.type !== "range" && input.type !== "checkbox";
+  }
+  return true;
+}
+
+function setFloatingOverlayVisible(visible: boolean) {
+  floatingOverlayVisible = visible;
+  if (floatingModeToolbar) {
+    floatingModeToolbar.hidden = !floatingOverlayVisible;
+  }
+  updateModeLabels();
+}
+
+function toggleFloatingToolbar() {
+  setFloatingOverlayVisible(!floatingOverlayVisible);
+}
+
 if (comparisonStage && comparisonSlider) {
   let isDraggingComparison = false;
+
+  const isOverComparisonHandle = (event: PointerEvent): boolean => {
+    const rect = comparisonStage.getBoundingClientRect();
+    if (rect.width <= 0) return false;
+    const reveal = Number(comparisonSlider.value);
+    const handleX = rect.left + (Math.max(0, Math.min(100, reveal)) / 100) * rect.width;
+    return Math.abs(event.clientX - handleX) <= 18;
+  };
 
   const revealFromPointer = (event: PointerEvent) => {
     const rect = comparisonStage.getBoundingClientRect();
@@ -362,6 +571,20 @@ if (comparisonStage && comparisonSlider) {
   });
 
   comparisonStage.addEventListener("pointerdown", (event) => {
+    const target = event.target as HTMLElement | null;
+    if (target?.closest(".floating-mode-toolbar")) {
+      return;
+    }
+    if (isOverComparisonHandle(event)) {
+      isDraggingComparison = true;
+      comparisonStage.setPointerCapture(event.pointerId);
+      revealFromPointer(event);
+      event.preventDefault();
+      return;
+    }
+    if (handleQuantizerStagePointer(event)) {
+      return;
+    }
     isDraggingComparison = true;
     comparisonStage.setPointerCapture(event.pointerId);
     revealFromPointer(event);
@@ -369,12 +592,25 @@ if (comparisonStage && comparisonSlider) {
   });
 
   comparisonStage.addEventListener("pointermove", (event) => {
+    if (draggedImageSite?.pointerId === event.pointerId) {
+      updateDraggedImageSite(event.clientX, event.clientY);
+      event.preventDefault();
+      return;
+    }
     if (!isDraggingComparison) return;
     revealFromPointer(event);
     event.preventDefault();
   });
 
   const stopComparisonDrag = (event: PointerEvent) => {
+    if (draggedImageSite?.pointerId === event.pointerId) {
+      draggedImageSite = null;
+      if (comparisonStage.hasPointerCapture(event.pointerId)) {
+        comparisonStage.releasePointerCapture(event.pointerId);
+      }
+      event.preventDefault();
+      return;
+    }
     if (!isDraggingComparison) return;
     isDraggingComparison = false;
     if (comparisonStage.hasPointerCapture(event.pointerId)) {
@@ -450,7 +686,7 @@ async function loadSinglePngPreset(fileName: string): Promise<boolean> {
 }
 
 async function initializePresets() {
-  if (!presetsSelect || !presetDescription) return;
+  if (!presetsSelect) return;
 
   // Load presets from manifest
   await loadPresetsFromManifest();
@@ -467,15 +703,16 @@ async function initializePresets() {
   presetsSelect.addEventListener("change", () => {
     const selectedKey = presetsSelect.value;
     if (!selectedKey) {
-      presetDescription.textContent = "";
+      activePresetDescription = "";
+      updateModeLabels();
       return;
     }
 
     const preset = allPresets[selectedKey];
     if (!preset) return;
 
-    // Update description
-    presetDescription.textContent = preset.description;
+    activePresetDescription = preset.description;
+    updateModeLabels();
 
     // Apply preset settings
     applySettings(preset.settings);
@@ -854,6 +1091,1114 @@ function togglePosterizeAlpha(
   }
 }
 
+function captureEngineSettings(): EngineSettingsCache {
+  return {
+    colorSpace: activeColorSpace,
+    smoothing: smoothingAmount,
+    posterizeAlpha: posterizeAlphaEnabled,
+    lockChannels: lockChannelsEnabled,
+  };
+}
+
+function restoreEngineSettings(settings: EngineSettingsCache) {
+  activeColorSpace = settings.colorSpace;
+  smoothingAmount = settings.smoothing;
+  posterizeAlphaEnabled = settings.posterizeAlpha;
+  lockChannelsEnabled =
+    activeProcessingMode === "voronoi" ? false : settings.lockChannels;
+
+  if (colorSpaceSelect) colorSpaceSelect.value = activeColorSpace;
+  syncSmoothingUi();
+  if (posterizeAlphaToggle) {
+    posterizeAlphaToggle.checked = posterizeAlphaEnabled;
+  }
+  if (lockToggle) {
+    lockToggle.checked = lockChannelsEnabled;
+  }
+  preprocessedImageCache = null;
+  histogramCache = null;
+}
+
+function setProcessingMode(next: ProcessingMode) {
+  if (activeProcessingMode === next) {
+    renderQuantizerControls();
+    return;
+  }
+  engineSettingsCache[activeProcessingMode] = captureEngineSettings();
+  activeProcessingMode = next;
+  const cachedSettings = engineSettingsCache[next];
+  if (cachedSettings) {
+    restoreEngineSettings(cachedSettings);
+  }
+  if (activeProcessingMode === "voronoi") {
+    rehydrateVoronoiSitesForActiveColorSpace();
+  }
+  if (processingModeSelect) processingModeSelect.value = next;
+  updateModeLabels();
+  applyLockStateToUI();
+  renderAllBandControls();
+  updateAllHistograms();
+  renderQuantizerControls();
+  renderPosterized();
+}
+
+function setVoronoiEditMode(next: VoronoiEditMode) {
+  if (activeVoronoiEditMode === next) {
+    renderQuantizerControls();
+    return;
+  }
+  activeVoronoiEditMode = next;
+  updateModeLabels();
+  updateAllHistograms();
+  renderQuantizerControls();
+}
+
+function touchQuantizerState() {
+  quantizerRevision += 1;
+}
+
+function activeQuantizerGroup(): QuantizationGroup | undefined {
+  return (
+    quantizerGroups.find((group) => group.id === activeQuantizerGroupId) ??
+    quantizerGroups[0]
+  );
+}
+
+function activeBezierRegion(): BezierRegion | undefined {
+  return bezierRegions.find((region) => region.id === activeBezierRegionId);
+}
+
+function resetQuantizerState() {
+  const group = createQuantizationGroup("Index 1", { r: 0, g: 150, b: 255 });
+  quantizerGroups = [group];
+  activeQuantizerGroupId = group.id;
+  activeQuantizerSiteId = null;
+  bezierRegions = [];
+  activeBezierRegionId = null;
+  touchQuantizerState();
+  updateAllHistograms();
+  renderQuantizerControls();
+  renderPosterized();
+}
+
+function addQuantizerGroup() {
+  const group = createQuantizationGroup(
+    `Index ${quantizerGroups.length + 1}`,
+    randomReadableColor(),
+  );
+  quantizerGroups.push(group);
+  activeQuantizerGroupId = group.id;
+  activeQuantizerSiteId = null;
+  touchQuantizerState();
+  updateAllHistograms();
+  renderQuantizerControls();
+}
+
+function deleteActiveQuantizerGroup() {
+  if (quantizerGroups.length <= 1) {
+    const group = quantizerGroups[0];
+    group.sites = [];
+    group.outputCoords = {};
+    group.outputFollowsSite = {};
+    activeQuantizerSiteId = null;
+  } else {
+    quantizerGroups = quantizerGroups.filter(
+      (group) => group.id !== activeQuantizerGroupId,
+    );
+    activeQuantizerGroupId = quantizerGroups[0].id;
+    activeQuantizerSiteId = null;
+  }
+  touchQuantizerState();
+  updateAllHistograms();
+  renderQuantizerControls();
+  renderPosterized();
+}
+
+function addBezierRegion() {
+  const region = createBezierRegion(
+    `Index ${bezierRegions.length + 1}`,
+    activeColorSpace,
+    randomReadableColor(),
+  );
+  bezierRegions.push(region);
+  activeBezierRegionId = region.id;
+  touchQuantizerState();
+  updateAllHistograms();
+  renderQuantizerControls();
+}
+
+function deleteActiveBezierRegion() {
+  if (!activeBezierRegionId) return;
+  bezierRegions = bezierRegions.filter(
+    (region) => region.id !== activeBezierRegionId,
+  );
+  activeBezierRegionId =
+    bezierRegions.find((region) => region.colorSpace === activeColorSpace)
+      ?.id ?? null;
+  touchQuantizerState();
+  updateAllHistograms();
+  renderQuantizerControls();
+  renderPosterized();
+}
+
+function closeActiveBezierRegion() {
+  const region = activeBezierRegion();
+  if (!region) return;
+  projectionPanelsForSpace(activeColorSpace).forEach((panel) => {
+    const projection = region.projections[panel];
+    if (projection && projection.nodes.length >= 3) {
+      projection.closed = true;
+    }
+  });
+  touchQuantizerState();
+  updateAllHistograms();
+  renderQuantizerControls();
+  renderPosterized();
+}
+
+function handleQuantizerStagePointer(event: PointerEvent): boolean {
+  if (activeProcessingMode === "threshold") return false;
+  const target = event.target as HTMLElement | null;
+  if (target?.closest(".comparison-slider")) return false;
+
+  if (activeProcessingMode === "voronoi") {
+    if (activeVoronoiEditMode === "target") return false;
+
+    const site = nearestImageSite(event.clientX, event.clientY);
+    if (site) {
+      activeQuantizerSiteId = site.id;
+      activeQuantizerGroupId = site.groupId;
+      draggedImageSite = { siteId: site.id, pointerId: event.pointerId };
+      comparisonStage?.setPointerCapture(event.pointerId);
+      renderQuantizerControls();
+      renderQuantizerOverlay();
+      event.preventDefault();
+      return true;
+    }
+    const sample = samplePreviewAverage(event.clientX, event.clientY);
+    if (sample) createSiteFromSample(sample);
+  } else {
+    const sample = samplePreviewPixel(event.clientX, event.clientY);
+    if (sample) addBezierBoundaryPoint(sample.rgb);
+  }
+  event.preventDefault();
+  return true;
+}
+
+function findQuantizerSite(siteId: string | null) {
+  if (!siteId) return null;
+  return (
+    quantizerGroups
+      .flatMap((group) => group.sites)
+      .find((site) => site.id === siteId) ?? null
+  );
+}
+
+function nearestImageSite(clientX: number, clientY: number) {
+  if (activeProcessingMode !== "voronoi" || !originalImageData) {
+    return null;
+  }
+  const layout = previewImageLayout();
+  if (!layout) return null;
+  const hitRadius = 12;
+  const sites = completedSites(quantizerGroups, activeColorSpace).filter(
+    (site) => site.samplePoint,
+  );
+  const sortedSites = [
+    ...sites.filter((site) => site.groupId === activeQuantizerGroupId),
+    ...sites.filter((site) => site.groupId !== activeQuantizerGroupId),
+  ];
+
+  let bestSite: (typeof sortedSites)[number] | null = null;
+  let bestDistance = Number.POSITIVE_INFINITY;
+  for (const site of sortedSites) {
+    if (!site.samplePoint) continue;
+    const x = layout.left + site.samplePoint.x * layout.width;
+    const y = layout.top + site.samplePoint.y * layout.height;
+    const distance = Math.hypot(clientX - x, clientY - y);
+    if (distance <= hitRadius && distance < bestDistance) {
+      bestSite = site;
+      bestDistance = distance;
+    }
+  }
+  return bestSite;
+}
+
+function updateDraggedImageSite(clientX: number, clientY: number) {
+  if (!draggedImageSite) return;
+  const site = findQuantizerSite(draggedImageSite.siteId);
+  if (!site) return;
+  const sample = samplePreviewAverage(clientX, clientY);
+  if (!sample) return;
+  updateSiteFromSample(site, sample);
+}
+
+type PreviewPixel = { rgb: RGB; x: number; y: number };
+type VoronoiSample = {
+  rgb: RGB;
+  coord: ReturnType<typeof siteCoordFromRgb>;
+  samplePoint: { x: number; y: number };
+};
+
+function previewPixelFromClient(
+  clientX: number,
+  clientY: number,
+): { x: number; y: number } | null {
+  if (!originalImageData) return null;
+  const layout = previewImageLayout();
+  if (!layout) return null;
+  const x = Math.floor(
+    ((clientX - layout.left) / layout.width) * originalImageData.width,
+  );
+  const y = Math.floor(
+    ((clientY - layout.top) / layout.height) * originalImageData.height,
+  );
+  if (
+    x < 0 ||
+    y < 0 ||
+    x >= originalImageData.width ||
+    y >= originalImageData.height
+  ) {
+    return null;
+  }
+  return { x, y };
+}
+
+function previewImageLayout(): {
+  left: number;
+  top: number;
+  width: number;
+  height: number;
+} | null {
+  if (!originalImageData || !sourceCanvas) return null;
+  const rect = sourceCanvas.getBoundingClientRect();
+  if (rect.width <= 0 || rect.height <= 0) return null;
+
+  const imageAspect = originalImageData.width / originalImageData.height;
+  const boxAspect = rect.width / rect.height;
+  let width = rect.width;
+  let height = rect.height;
+  let left = rect.left;
+  let top = rect.top;
+
+  if (boxAspect > imageAspect) {
+    width = rect.height * imageAspect;
+    left += (rect.width - width) / 2;
+  } else if (boxAspect < imageAspect) {
+    height = rect.width / imageAspect;
+    top += (rect.height - height) / 2;
+  }
+
+  return { left, top, width, height };
+}
+
+function samplePreviewPixel(
+  clientX: number,
+  clientY: number,
+): PreviewPixel | null {
+  if (!originalImageData) return null;
+  const point = previewPixelFromClient(clientX, clientY);
+  if (!point) return null;
+  const { x, y } = point;
+  const index = (y * originalImageData.width + x) * 4;
+  const data = originalImageData.data;
+  if (data[index + 3] === 0) return null;
+  return {
+    x,
+    y,
+    rgb: { r: data[index], g: data[index + 1], b: data[index + 2] },
+  };
+}
+
+function samplePreviewAverageAtPixel(
+  center: { x: number; y: number },
+): VoronoiSample | null {
+  if (!originalImageData) return null;
+  const { width, height, data } = originalImageData;
+  const samplePoint = {
+    x: width <= 1 ? 0 : center.x / (width - 1),
+    y: height <= 1 ? 0 : center.y / (height - 1),
+  };
+  const radius = sanitizeVoronoiSampleRadius(voronoiSampleRadius) - 1;
+  const radiusSquared = radius * radius;
+  let count = 0;
+  let red = 0;
+  let green = 0;
+  let blue = 0;
+  let hueX = 0;
+  let hueY = 0;
+  let saturation = 0;
+  let value = 0;
+
+  for (
+    let y = Math.max(0, center.y - radius);
+    y <= Math.min(height - 1, center.y + radius);
+    y += 1
+  ) {
+    for (
+      let x = Math.max(0, center.x - radius);
+      x <= Math.min(width - 1, center.x + radius);
+      x += 1
+    ) {
+      const dx = x - center.x;
+      const dy = y - center.y;
+      if (dx * dx + dy * dy > radiusSquared) continue;
+
+      const index = (y * width + x) * 4;
+      if (data[index + 3] === 0) continue;
+
+      const r = data[index];
+      const g = data[index + 1];
+      const b = data[index + 2];
+      red += r;
+      green += g;
+      blue += b;
+      count += 1;
+
+      if (activeColorSpace === "hsv") {
+        const [h, s, v] = rgbToHsv255(r, g, b);
+        const radians = (h / 255) * Math.PI * 2;
+        hueX += Math.cos(radians) * s;
+        hueY += Math.sin(radians) * s;
+        saturation += s;
+        value += v;
+      }
+    }
+  }
+
+  if (count === 0) return null;
+
+  if (activeColorSpace === "hsv") {
+    const averagedS = Math.round(saturation / count);
+    const averagedV = Math.round(value / count);
+    const hueDegrees =
+      hueX === 0 && hueY === 0
+        ? 0
+        : ((Math.atan2(hueY, hueX) * 180) / Math.PI + 360) % 360;
+    const coord = {
+      h: Math.min(359, Math.floor(hueDegrees)),
+      s: averagedS,
+      v: averagedV,
+    };
+    const [r, g, b] = hsv255ToRgb((coord.h / 360) * 255, coord.s, coord.v);
+    return { rgb: { r, g, b }, coord, samplePoint };
+  }
+
+  const rgb = {
+    r: Math.round(red / count),
+    g: Math.round(green / count),
+    b: Math.round(blue / count),
+  };
+  return { rgb, coord: siteCoordFromRgb("rgb", rgb), samplePoint };
+}
+
+function samplePreviewAverage(
+  clientX: number,
+  clientY: number,
+): VoronoiSample | null {
+  if (!originalImageData) return null;
+  const center = previewPixelFromClient(clientX, clientY);
+  if (!center) return null;
+  return samplePreviewAverageAtPixel(center);
+}
+
+function samplePreviewAverageAtSamplePoint(
+  samplePoint: { x: number; y: number },
+): VoronoiSample | null {
+  if (!originalImageData) return null;
+  const x = Math.round(
+    Math.max(0, Math.min(1, samplePoint.x)) * (originalImageData.width - 1),
+  );
+  const y = Math.round(
+    Math.max(0, Math.min(1, samplePoint.y)) * (originalImageData.height - 1),
+  );
+  return samplePreviewAverageAtPixel({ x, y });
+}
+
+function rehydrateVoronoiSitesForActiveColorSpace() {
+  if (!originalImageData) return;
+
+  for (const group of quantizerGroups) {
+    const sourceSite =
+      group.sites.find(
+        (site) => site.colorSpace === activeColorSpace && site.samplePoint,
+      ) ?? group.sites.find((site) => site.samplePoint);
+    if (!sourceSite?.samplePoint) continue;
+
+    const sample = samplePreviewAverageAtSamplePoint(sourceSite.samplePoint);
+    if (!sample) continue;
+
+    const existingSite = group.sites.find(
+      (site) => site.colorSpace === activeColorSpace,
+    );
+    if (existingSite) {
+      existingSite.coord = sample.coord;
+      existingSite.samplePoint = sample.samplePoint;
+    } else {
+      const site = createSite(group.id, activeColorSpace, sample.coord);
+      site.samplePoint = sample.samplePoint;
+      group.sites.push(site);
+    }
+  }
+
+  touchQuantizerState();
+}
+
+function createSiteFromSample(sample: VoronoiSample) {
+  const { rgb, coord } = sample;
+  const duplicate = completedSites(quantizerGroups, activeColorSpace).find(
+    (site) => sampledCoordDistance(site.coord, coord) <= 0.0008,
+  );
+  if (duplicate) {
+    activeQuantizerSiteId = duplicate.id;
+    activeQuantizerGroupId = duplicate.groupId;
+    updateAllHistograms();
+    renderQuantizerControls();
+    return;
+  }
+
+  const group = activeQuantizerGroup() ?? quantizerGroups[0];
+  const site = createSite(group.id, activeColorSpace, coord);
+  site.samplePoint = sample.samplePoint;
+  group.sites = group.sites.filter(
+    (candidate) => candidate.colorSpace !== activeColorSpace,
+  );
+  group.sites.push(site);
+  group.paletteColor = rgb;
+  group.outputCoords[activeColorSpace] = coord;
+  group.outputFollowsSite[activeColorSpace] = true;
+  activeQuantizerSiteId = site.id;
+  activeQuantizerGroupId = group.id;
+  touchQuantizerState();
+  updateAllHistograms();
+  renderQuantizerControls();
+  renderQuantizerOverlay();
+  renderPosterized();
+}
+
+function updateSiteFromSample(
+  site: NonNullable<ReturnType<typeof findQuantizerSite>>,
+  sample: VoronoiSample,
+) {
+  const group = quantizerGroups.find(
+    (candidate) => candidate.id === site.groupId,
+  );
+  site.coord = sample.coord;
+  site.samplePoint = sample.samplePoint;
+  if (group && group.outputFollowsSite[activeColorSpace] !== false) {
+    group.paletteColor = sample.rgb;
+    group.outputCoords[activeColorSpace] = sample.coord;
+  }
+  activeQuantizerSiteId = site.id;
+  activeQuantizerGroupId = site.groupId;
+  touchQuantizerState();
+  updateAllHistograms();
+  renderQuantizerControls();
+  renderQuantizerOverlay();
+  renderPosterized();
+}
+
+function activeIndexLabel(index: number): string {
+  return `Index ${index + 1}`;
+}
+
+function groupIndex(groupId: string): number {
+  return Math.max(
+    0,
+    quantizerGroups.findIndex((candidate) => candidate.id === groupId),
+  );
+}
+
+function regionIndex(regionId: string): number {
+  return Math.max(
+    0,
+    bezierRegions
+      .filter((candidate) => candidate.colorSpace === activeColorSpace)
+      .findIndex((candidate) => candidate.id === regionId),
+  );
+}
+
+function targetChannelValue(channel: Channel): number | null {
+  if (activeProcessingMode === "voronoi") {
+    const group = activeQuantizerGroup();
+    if (!group) return null;
+    if (activeColorSpace === "rgb") {
+      return (
+        {
+          red: group.paletteColor.r,
+          green: group.paletteColor.g,
+          blue: group.paletteColor.b,
+        } as const
+      )[channel];
+    }
+    const coord =
+      (group.outputCoords.hsv as HsvSiteCoord | undefined) ??
+      (siteCoordFromRgb("hsv", group.paletteColor) as HsvSiteCoord);
+    return channel === "red"
+      ? Math.round((coord.h / 360) * 255)
+      : channel === "green"
+        ? coord.s
+        : coord.v;
+  }
+
+  if (activeProcessingMode === "bezier") {
+    const region = activeBezierRegion();
+    if (!region) return null;
+    if (activeColorSpace === "rgb") {
+      return (
+        {
+          red: region.outputColor.r,
+          green: region.outputColor.g,
+          blue: region.outputColor.b,
+        } as const
+      )[channel];
+    }
+    const [h, s, v] = rgbToHsv255(
+      region.outputColor.r,
+      region.outputColor.g,
+      region.outputColor.b,
+    );
+    return channel === "red" ? h : channel === "green" ? s : v;
+  }
+
+  return null;
+}
+
+function setTargetChannelValue(channel: Channel, value: number) {
+  if (activeProcessingMode === "threshold") return;
+  const clamped = Math.max(0, Math.min(255, Math.round(value)));
+
+  if (activeProcessingMode === "voronoi") {
+    const group = activeQuantizerGroup();
+    if (!group) return;
+
+    if (activeColorSpace === "rgb") {
+      const next = { ...group.paletteColor };
+      if (channel === "red") next.r = clamped;
+      if (channel === "green") next.g = clamped;
+      if (channel === "blue") next.b = clamped;
+      group.paletteColor = next;
+      group.outputCoords.rgb = { ...next };
+    } else {
+      const coord = {
+        ...(((group.outputCoords.hsv as HsvSiteCoord | undefined) ??
+          siteCoordFromRgb("hsv", group.paletteColor)) as HsvSiteCoord),
+      };
+      if (channel === "red")
+        coord.h = Math.min(359, Math.round((clamped / 255) * 360));
+      if (channel === "green") coord.s = clamped;
+      if (channel === "blue") coord.v = clamped;
+      group.outputCoords.hsv = coord;
+      group.paletteColor = hsvCoordToRgb(coord);
+    }
+    group.outputFollowsSite[activeColorSpace] = false;
+  } else {
+    const region = activeBezierRegion();
+    if (!region) return;
+
+    if (activeColorSpace === "rgb") {
+      const next = { ...region.outputColor };
+      if (channel === "red") next.r = clamped;
+      if (channel === "green") next.g = clamped;
+      if (channel === "blue") next.b = clamped;
+      region.outputColor = next;
+    } else {
+      const hsv = rgbToHsv255(
+        region.outputColor.r,
+        region.outputColor.g,
+        region.outputColor.b,
+      );
+      if (channel === "red") hsv[0] = clamped;
+      if (channel === "green") hsv[1] = clamped;
+      if (channel === "blue") hsv[2] = clamped;
+      const [r, g, b] = hsv255ToRgb(hsv[0], hsv[1], hsv[2]);
+      region.outputColor = { r, g, b };
+    }
+  }
+
+  touchQuantizerState();
+  updateAllHistograms();
+  renderQuantizerControls();
+  renderQuantizerOverlay();
+  renderPosterized();
+}
+
+function usesHistogramTargetControls(): boolean {
+  return (
+    activeProcessingMode === "bezier" ||
+    (activeProcessingMode === "voronoi" && activeVoronoiEditMode === "target")
+  );
+}
+
+function addBezierBoundaryPoint(rgb: RGB) {
+  let region = activeBezierRegion();
+  if (!region || region.colorSpace !== activeColorSpace) {
+    addBezierRegion();
+    region = activeBezierRegion();
+  }
+  if (!region) return;
+
+  const coord = siteCoordFromRgb(activeColorSpace, rgb);
+  projectionPanelsForSpace(activeColorSpace).forEach((panel) => {
+    const projection = projectionForRegion(region, panel);
+    if (projection.closed) return;
+    const point = projectCoordToPanelPoint(panel, coord);
+    projection.nodes.push(createBezierNode(point.x, point.y));
+  });
+  region.outputColor = rgb;
+  touchQuantizerState();
+  renderQuantizerControls();
+  renderPosterized();
+}
+
+function renderQuantizerControls() {
+  comparisonStage?.classList.toggle(
+    "quantizer-editing",
+    activeProcessingMode === "bezier" ||
+      (activeProcessingMode === "voronoi" &&
+        activeVoronoiEditMode === "source"),
+  );
+  histogramsSection?.classList.toggle(
+    "quantizer-mode",
+    activeProcessingMode !== "threshold",
+  );
+  histogramsSection?.classList.toggle(
+    "quantizer-target-mode",
+    usesHistogramTargetControls(),
+  );
+  histogramsSection?.classList.toggle(
+    "voronoi-color-bars",
+    activeProcessingMode === "voronoi",
+  );
+  controlsPane?.classList.toggle(
+    "target-assignment",
+    activeProcessingMode === "voronoi" && activeVoronoiEditMode === "target",
+  );
+  quantizerList?.classList.toggle(
+    "palette-grid",
+    activeProcessingMode === "voronoi",
+  );
+  if (quantizerPanel) {
+    quantizerPanel.hidden = activeProcessingMode === "threshold";
+  }
+  if (quantizerTitle) {
+    quantizerTitle.textContent =
+      activeProcessingMode === "bezier" ? "Bézier Volumes" : "Voronoi";
+  }
+  if (voronoiActions) {
+    voronoiActions.hidden = activeProcessingMode !== "voronoi";
+  }
+  if (bezierActions) {
+    bezierActions.hidden = activeProcessingMode !== "bezier";
+  }
+  voronoiSourceModeBtn?.classList.toggle(
+    "active",
+    activeVoronoiEditMode === "source",
+  );
+  voronoiTargetModeBtn?.classList.toggle(
+    "active",
+    activeVoronoiEditMode === "target",
+  );
+  voronoiSourceModeBtn?.setAttribute(
+    "aria-pressed",
+    activeVoronoiEditMode === "source" ? "true" : "false",
+  );
+  voronoiTargetModeBtn?.setAttribute(
+    "aria-pressed",
+    activeVoronoiEditMode === "target" ? "true" : "false",
+  );
+  updateToolbarModeState();
+  updateModeLabels();
+  if (activeProcessingMode === "threshold") {
+    renderQuantizerOverlay();
+    return;
+  }
+  if (activeProcessingMode === "voronoi") {
+    renderVoronoiControls();
+  } else {
+    renderBezierControls();
+  }
+  renderQuantizerStats(null);
+  renderQuantizerOverlay();
+}
+
+function renderQuantizerOverlay() {
+  if (!quantizerOverlayCanvas || !quantizerOverlayCtx) return;
+  if (!originalImageData || activeProcessingMode !== "voronoi") {
+    quantizerOverlayCtx.clearRect(
+      0,
+      0,
+      quantizerOverlayCanvas.width,
+      quantizerOverlayCanvas.height,
+    );
+    return;
+  }
+
+  if (quantizerOverlayCanvas.width !== originalImageData.width) {
+    quantizerOverlayCanvas.width = originalImageData.width;
+  }
+  if (quantizerOverlayCanvas.height !== originalImageData.height) {
+    quantizerOverlayCanvas.height = originalImageData.height;
+  }
+
+  const ctx = quantizerOverlayCtx;
+  const { width, height } = quantizerOverlayCanvas;
+  ctx.clearRect(0, 0, width, height);
+
+  const overlaySites = completedSites(quantizerGroups, activeColorSpace).filter(
+    (site) =>
+      activeVoronoiEditMode !== "target" ||
+      site.groupId === activeQuantizerGroupId,
+  );
+
+  for (const site of overlaySites) {
+    if (!site.samplePoint) continue;
+    const group = quantizerGroups.find(
+      (candidate) => candidate.id === site.groupId,
+    );
+    const x = site.samplePoint.x * (width - 1);
+    const y = site.samplePoint.y * (height - 1);
+    const active = site.id === activeQuantizerSiteId;
+
+    if (active) {
+      ctx.save();
+      ctx.strokeStyle = "rgba(255, 255, 255, 0.38)";
+      ctx.setLineDash([4, 4]);
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.arc(x, y, voronoiSampleRadius, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.restore();
+    }
+
+    ctx.save();
+    ctx.globalAlpha = activeVoronoiEditMode === "target" ? 0.74 : 1;
+    ctx.shadowColor = "rgba(0, 0, 0, 0.7)";
+    ctx.shadowBlur = 5;
+    ctx.fillStyle = group ? rgbToHex(group.paletteColor) : "#ffffff";
+    ctx.strokeStyle = active ? "#ffffff" : "rgba(255, 255, 255, 0.75)";
+    ctx.lineWidth = active ? 3 : 2;
+    ctx.beginPath();
+    ctx.arc(x, y, active ? 7 : 5.5, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.stroke();
+    ctx.restore();
+  }
+}
+
+function renderVoronoiControls() {
+  if (!quantizerEditor || !quantizerList) return;
+  quantizerEditor.replaceChildren();
+  quantizerList.replaceChildren();
+
+  quantizerEditor.appendChild(createSampleRadiusRow());
+
+  const group = activeQuantizerGroup();
+  if (group) {
+    const indexTitle = document.createElement("div");
+    indexTitle.className = "control-section-title";
+    indexTitle.textContent = activeIndexLabel(groupIndex(group.id));
+    quantizerEditor.appendChild(indexTitle);
+
+    quantizerEditor.appendChild(
+      createColorRow("Target Color", group.paletteColor, (value) => {
+        group.paletteColor = value;
+        group.outputCoords[activeColorSpace] = outputCoordFromRgb(
+          activeColorSpace,
+          value,
+        );
+        group.outputFollowsSite[activeColorSpace] = false;
+        touchQuantizerState();
+        updateAllHistograms();
+        renderPosterized();
+        renderQuantizerControls();
+      }),
+    );
+    const site = group.sites.find(
+      (candidate) => candidate.id === activeQuantizerSiteId,
+    );
+    if (site) {
+      quantizerEditor.appendChild(
+        createNumberRow("Source Weight", site.mass, -10, 10, 0.1, (value) => {
+          site.mass = Math.max(-10, Math.min(10, value));
+          touchQuantizerState();
+          renderPosterized();
+        }),
+      );
+    }
+  }
+
+  quantizerGroups.forEach((candidate) => {
+    const item = document.createElement("button");
+    item.type = "button";
+    item.className = `quantizer-item ${
+      candidate.id === activeQuantizerGroupId ? "active" : ""
+    }`;
+    item.title = `${activeIndexLabel(groupIndex(candidate.id))}: ${
+      candidate.sites.filter((site) => site.colorSpace === activeColorSpace)
+        .length > 0
+        ? "source set"
+        : "no source"
+    }`;
+    item.setAttribute("aria-label", item.title);
+    const swatch = document.createElement("span");
+    swatch.className = "quantizer-swatch";
+    const sourceColor = sourceColorForGroup(candidate);
+    const sourceHex = sourceColor ? rgbToHex(sourceColor) : "#111418";
+    const targetHex = rgbToHex(candidate.paletteColor);
+    swatch.style.background = `linear-gradient(to right, ${sourceHex} 0 50%, ${targetHex} 50% 100%)`;
+    const name = document.createElement("span");
+    name.className = "quantizer-name";
+    name.textContent = activeIndexLabel(groupIndex(candidate.id));
+    const meta = document.createElement("span");
+    meta.className = "quantizer-meta";
+    meta.textContent =
+      candidate.sites.filter((site) => site.colorSpace === activeColorSpace)
+        .length > 0
+        ? "source set"
+        : "no source";
+    item.append(swatch, name, meta);
+    item.addEventListener("click", () => {
+      activeQuantizerGroupId = candidate.id;
+      activeQuantizerSiteId =
+        candidate.sites.find((site) => site.colorSpace === activeColorSpace)
+          ?.id ?? null;
+      updateAllHistograms();
+      renderQuantizerControls();
+    });
+    quantizerList.appendChild(item);
+  });
+}
+
+function sanitizeVoronoiSampleRadius(value: unknown): number {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return 1;
+  return Math.max(1, Math.min(10, Math.round(numeric)));
+}
+
+function createSampleRadiusRow(): HTMLElement {
+  const label = document.createElement("label");
+  label.className = "field-block";
+
+  const span = document.createElement("span");
+  span.textContent = "Sample Radius";
+
+  const controls = document.createElement("div");
+  controls.className = "range-with-value";
+
+  const slider = document.createElement("input");
+  slider.type = "range";
+  slider.min = "1";
+  slider.max = "10";
+  slider.step = "1";
+  slider.value = sanitizeVoronoiSampleRadius(voronoiSampleRadius).toString();
+
+  const number = document.createElement("input");
+  number.type = "number";
+  number.min = "1";
+  number.max = "10";
+  number.step = "1";
+  number.value = slider.value;
+  number.setAttribute("aria-label", "Voronoi sample radius");
+
+  const apply = (value: unknown) => {
+    voronoiSampleRadius = sanitizeVoronoiSampleRadius(value);
+    const next = voronoiSampleRadius.toString();
+    slider.value = next;
+    number.value = next;
+    updateModeLabels();
+  };
+
+  slider.addEventListener("input", () => apply(slider.value));
+  number.addEventListener("change", () => apply(number.value));
+  commitNumberInputOnEnter(number, () => apply(number.value));
+
+  controls.append(slider, number);
+  label.append(span, controls);
+  return label;
+}
+
+function renderBezierControls() {
+  if (!quantizerEditor || !quantizerList) return;
+  quantizerEditor.replaceChildren();
+  quantizerList.replaceChildren();
+
+  const region = activeBezierRegion();
+  if (region) {
+    const indexTitle = document.createElement("div");
+    indexTitle.className = "control-section-title";
+    indexTitle.textContent = activeIndexLabel(regionIndex(region.id));
+    quantizerEditor.appendChild(indexTitle);
+
+    quantizerEditor.appendChild(
+      createColorRow("Target Color", region.outputColor, (value) => {
+        region.outputColor = value;
+        touchQuantizerState();
+        updateAllHistograms();
+        renderPosterized();
+        renderQuantizerControls();
+      }),
+    );
+    quantizerEditor.appendChild(
+      createNumberRow("Source Weight", region.mass, -10, 10, 0.1, (value) => {
+        region.mass = Math.max(-10, Math.min(10, value));
+        touchQuantizerState();
+        renderPosterized();
+      }),
+    );
+    quantizerEditor.appendChild(
+      createNumberRow(
+        "Index Priority",
+        region.priority,
+        -100,
+        100,
+        1,
+        (value) => {
+          region.priority = Math.round(value);
+          touchQuantizerState();
+          renderPosterized();
+        },
+      ),
+    );
+  }
+
+  bezierRegions
+    .filter((candidate) => candidate.colorSpace === activeColorSpace)
+    .forEach((candidate) => {
+      const item = document.createElement("button");
+      item.type = "button";
+      item.className = `quantizer-item ${
+        candidate.id === activeBezierRegionId ? "active" : ""
+      }`;
+      const swatch = document.createElement("span");
+      swatch.className = "quantizer-swatch";
+      swatch.style.background = rgbToHex(candidate.outputColor);
+      const name = document.createElement("span");
+      name.className = "quantizer-name";
+      name.textContent = activeIndexLabel(regionIndex(candidate.id));
+      const meta = document.createElement("span");
+      meta.className = "quantizer-meta";
+      const points =
+        candidate.projections[projectionPanelsForSpace(activeColorSpace)[0]]
+          ?.nodes.length ?? 0;
+      meta.textContent = points > 0 ? `${points} source points` : "no source";
+      item.append(swatch, name, meta);
+      item.addEventListener("click", () => {
+        activeBezierRegionId = candidate.id;
+        updateAllHistograms();
+        renderQuantizerControls();
+      });
+      quantizerList.appendChild(item);
+    });
+}
+
+function renderQuantizerStats(image: AnalyzedImage | null) {
+  if (!quantizerStats || activeProcessingMode === "threshold") return;
+  const activeSites = completedSites(quantizerGroups, activeColorSpace);
+  const activeRegions = bezierRegions.filter(
+    (region) => region.colorSpace === activeColorSpace,
+  );
+  const validRegions = activeRegions.filter(
+    (region) => validRegionProjections(region).length > 0,
+  );
+  quantizerStats.textContent =
+    activeProcessingMode === "voronoi"
+      ? `${activeColorSpace.toUpperCase()} Voronoi: ${activeSites.length} source sample${activeSites.length === 1 ? "" : "s"} across ${quantizerGroups.length} index${quantizerGroups.length === 1 ? "" : "es"}${image ? `, ${image.sourceColors.length} unique source colors` : ""}.`
+      : `${activeColorSpace.toUpperCase()} Bézier: ${validRegions.length}/${activeRegions.length} closed source region${activeRegions.length === 1 ? "" : "s"}${image ? `, ${image.sourceColors.length} unique source colors` : ""}.`;
+}
+
+function createTextRow(
+  labelText: string,
+  value: string,
+  onChange: (value: string) => void,
+): HTMLElement {
+  const label = document.createElement("label");
+  label.className = "field-block";
+  const span = document.createElement("span");
+  span.textContent = labelText;
+  const input = document.createElement("input");
+  input.type = "text";
+  input.value = value;
+  input.addEventListener("change", () => onChange(input.value.trim()));
+  label.append(span, input);
+  return label;
+}
+
+function createColorRow(
+  labelText: string,
+  value: RGB,
+  onChange: (value: RGB) => void,
+): HTMLElement {
+  const label = document.createElement("label");
+  label.className = "quantizer-row";
+  const span = document.createElement("span");
+  span.className = "control-label";
+  span.textContent = labelText;
+  const input = document.createElement("input");
+  input.type = "color";
+  input.value = rgbToHex(value);
+  input.addEventListener("input", () => onChange(hexToRgb(input.value)));
+  label.append(span, input);
+  return label;
+}
+
+function createNumberRow(
+  labelText: string,
+  value: number,
+  min: number,
+  max: number,
+  step: number,
+  onChange: (value: number) => void,
+): HTMLElement {
+  const label = document.createElement("label");
+  label.className = "quantizer-row";
+  const span = document.createElement("span");
+  span.className = "control-label";
+  span.textContent = labelText;
+  const input = document.createElement("input");
+  input.type = "number";
+  input.min = min.toString();
+  input.max = max.toString();
+  input.step = step.toString();
+  input.value = value.toString();
+  input.addEventListener("change", () => {
+    const next = Number(input.value);
+    if (Number.isFinite(next)) onChange(next);
+  });
+  label.append(span, input);
+  return label;
+}
+
+function randomReadableColor(): RGB {
+  const hue =
+    (quantizerRevision * 47 +
+      quantizerGroups.length * 83 +
+      bezierRegions.length * 61) %
+    360;
+  const [r, g, b] = hsv255ToRgb((hue / 360) * 255, 180, 230);
+  return { r, g, b };
+}
+
+function sampledCoordDistance(a: unknown, b: unknown): number {
+  if (activeColorSpace === "rgb") {
+    const left = a as { r: number; g: number; b: number };
+    const right = b as { r: number; g: number; b: number };
+    const dr = (left.r - right.r) / 255;
+    const dg = (left.g - right.g) / 255;
+    const db = (left.b - right.b) / 255;
+    return dr * dr + dg * dg + db * db;
+  }
+
+  const left = a as { h: number; s: number; v: number };
+  const right = b as { h: number; s: number; v: number };
+  const dh =
+    Math.min(Math.abs(left.h - right.h), 360 - Math.abs(left.h - right.h)) /
+    360;
+  const ds = (left.s - right.s) / 255;
+  const dv = (left.v - right.v) / 255;
+  return dh * dh + ds * ds + dv * dv;
+}
+
 function sanitizeThresholds(values: unknown, level: number): number[] {
   const fallback = createEvenThresholds(level);
   if (!Array.isArray(values)) return fallback;
@@ -890,6 +2235,56 @@ function collectChannelSettings(channel: UiChannel): ChannelSettings {
   };
 }
 
+function exportQuantizerGroups(): QuantizationGroup[] {
+  if (activeProcessingMode !== "voronoi") {
+    return quantizerGroups;
+  }
+  const exportSiteForColorSpace = (
+    groupId: string,
+    sourceSite: QuantizationGroup["sites"][number],
+    colorSpace: ColorSpace,
+  ) => {
+    const rgb =
+      sourceSite.colorSpace === "hsv"
+        ? hsvCoordToRgb(sourceSite.coord as HsvSiteCoord)
+        : (sourceSite.coord as RGB);
+    return {
+      id:
+        sourceSite.colorSpace === colorSpace
+          ? sourceSite.id
+          : `${sourceSite.id}-${colorSpace}`,
+      groupId,
+      colorSpace,
+      coord:
+        colorSpace === "hsv"
+          ? siteCoordFromRgb("hsv", rgb)
+          : siteCoordFromRgb("rgb", rgb),
+      mass: sourceSite.mass,
+      order: sourceSite.order,
+    };
+  };
+
+  return quantizerGroups.map((group) => ({
+    ...group,
+    outputCoords: {
+      ...group.outputCoords,
+      rgb: outputCoordFromRgb("rgb", group.paletteColor),
+      hsv: outputCoordFromRgb("hsv", group.paletteColor),
+    },
+    outputFollowsSite: { ...group.outputFollowsSite },
+    sites: (() => {
+      const sourceSite =
+        group.sites.find((site) => site.colorSpace === activeColorSpace) ??
+        group.sites[0];
+      if (!sourceSite) return [];
+      return [
+        exportSiteForColorSpace(group.id, sourceSite, "rgb"),
+        exportSiteForColorSpace(group.id, sourceSite, "hsv"),
+      ];
+    })(),
+  }));
+}
+
 function buildSettingsPayload(): ExportSettings {
   const channels: Record<Channel, ChannelSettings> = {
     red: collectChannelSettings("red"),
@@ -897,12 +2292,23 @@ function buildSettingsPayload(): ExportSettings {
     blue: collectChannelSettings("blue"),
   };
   const payload: ExportSettings = {
-    version: 4,
+    version: 5,
     colorSpace: activeColorSpace,
+    processingMode: activeProcessingMode,
     smoothing: smoothingAmount,
     lockChannels: lockChannelsEnabled,
     posterizeAlpha: posterizeAlphaEnabled,
     channels,
+    quantizer: {
+      editMode: activeVoronoiEditMode,
+      sampleRadius: voronoiSampleRadius,
+      groups: exportQuantizerGroups(),
+      activeGroupId: activeQuantizerGroupId,
+      activeSiteId:
+        activeProcessingMode === "voronoi" ? null : activeQuantizerSiteId,
+      regions: bezierRegions,
+      activeRegionId: activeBezierRegionId,
+    },
   };
   if (posterizeAlphaEnabled) {
     payload.alpha = collectChannelSettings("alpha");
@@ -1273,15 +2679,58 @@ function applySettings(settings: ExportSettings) {
     syncChannelLabel("alpha", level);
   }
 
+  if (settings.quantizer) {
+    activeVoronoiEditMode =
+      settings.quantizer.editMode === "target" ? "target" : "source";
+    voronoiSampleRadius = sanitizeVoronoiSampleRadius(
+      settings.quantizer.sampleRadius ?? voronoiSampleRadius,
+    );
+    if (
+      Array.isArray(settings.quantizer.groups) &&
+      settings.quantizer.groups.length > 0
+    ) {
+      quantizerGroups = settings.quantizer.groups;
+      activeQuantizerGroupId =
+        quantizerGroups.find(
+          (group) => group.id === settings.quantizer?.activeGroupId,
+        )?.id ?? quantizerGroups[0].id;
+      activeQuantizerSiteId = settings.quantizer.activeSiteId ?? null;
+    }
+    if (Array.isArray(settings.quantizer.regions)) {
+      bezierRegions = settings.quantizer.regions;
+      activeBezierRegionId =
+        bezierRegions.find(
+          (region) => region.id === settings.quantizer?.activeRegionId,
+        )?.id ?? null;
+    }
+    touchQuantizerState();
+  }
+
+  activeProcessingMode =
+    settings.processingMode === "voronoi"
+      ? settings.processingMode
+      : "threshold";
+  if (activeProcessingMode === "voronoi") {
+    rehydrateVoronoiSitesForActiveColorSpace();
+    activeQuantizerSiteId =
+      activeQuantizerGroup()?.sites.find(
+        (site) => site.colorSpace === activeColorSpace,
+      )?.id ?? null;
+  }
+  if (processingModeSelect) processingModeSelect.value = activeProcessingMode;
+
   togglePosterizeAlpha(alphaEnabled, { saveToStorage: false, rerender: false });
-  toggleLockChannels(settings.lockChannels ?? false);
+  toggleLockChannels(
+    activeProcessingMode === "voronoi" ? false : (settings.lockChannels ?? false),
+  );
+  renderQuantizerControls();
 }
 
 type DragState = {
   channel: UiChannel;
   index: number;
   pointerId: number;
-  type: "threshold" | "level";
+  type: "threshold" | "level" | "target";
 } | null;
 let dragState: DragState = null;
 
@@ -1506,6 +2955,14 @@ function renderBandControls(channel: UiChannel) {
 }
 
 function renderAllBandControls() {
+  if (activeProcessingMode !== "threshold") {
+    (Object.keys(bandControlContainers) as UiChannel[]).forEach((channel) => {
+      const container = bandControlContainers[channel];
+      if (container) container.innerHTML = "";
+    });
+    return;
+  }
+
   if (lockChannelsEnabled) {
     if (activeColorSpace === "hsv") {
       renderBandControls("red");
@@ -1572,7 +3029,239 @@ function drawAdditiveRgbHistogram(
   ctx.restore();
 }
 
+function drawTargetChannelControl(
+  ctx: CanvasRenderingContext2D,
+  canvas: HTMLCanvasElement,
+  channel: UiChannel,
+) {
+  if (channel === "alpha" || !usesHistogramTargetControls()) return;
+  const value = targetChannelValue(channel);
+  if (value === null) return;
+
+  const x = (value / 255) * canvas.width;
+  const displayValue = rawToControlValue(channel, value);
+  const label =
+    activeColorSpace === "hsv" && channel === "red"
+      ? `Target ${displayValue}°`
+      : `Target ${displayValue}`;
+
+  ctx.save();
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  ctx.shadowColor = "rgba(0, 0, 0, 0.65)";
+  ctx.shadowBlur = 4;
+  ctx.strokeStyle = "#ffffff";
+  ctx.fillStyle = "#ffffff";
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.moveTo(x, 0);
+  ctx.lineTo(x, canvas.height);
+  ctx.stroke();
+
+  ctx.beginPath();
+  ctx.moveTo(x, 0);
+  ctx.lineTo(x - 7, 11);
+  ctx.lineTo(x + 7, 11);
+  ctx.closePath();
+  ctx.fill();
+
+  ctx.font = "600 11px system-ui, sans-serif";
+  ctx.textBaseline = "top";
+  const metrics = ctx.measureText(label);
+  const labelX = Math.max(4, Math.min(canvas.width - metrics.width - 8, x + 8));
+  ctx.fillText(label, labelX, 8);
+  ctx.restore();
+}
+
+function formatTargetReadout(channel: Channel, value: number): string {
+  if (activeColorSpace === "hsv") {
+    const prefix = channel === "red" ? "H" : channel === "green" ? "S" : "V";
+    const displayValue =
+      channel === "red" ? `${rawToControlValue(channel, value)}°` : value;
+    return `${prefix} ${displayValue}`;
+  }
+  const prefix = channel === "red" ? "R" : channel === "green" ? "G" : "B";
+  return `${prefix} ${value}`;
+}
+
+function syncChannelTargetReadout(channel: UiChannel) {
+  const title = channelTitles[channel];
+  if (!title) return;
+  let readout = title.querySelector<HTMLElement>(".channel-value-readout");
+  if (activeProcessingMode !== "voronoi" || channel === "alpha") {
+    readout?.remove();
+    return;
+  }
+
+  const value = targetChannelValue(channel);
+  if (value === null) {
+    readout?.remove();
+    return;
+  }
+
+  if (!readout) {
+    readout = document.createElement("span");
+    readout.className = "channel-value-readout";
+    title.appendChild(readout);
+  }
+  readout.textContent = formatTargetReadout(channel, Math.round(value));
+}
+
+function activeVoronoiSourceChannelValue(channel: Channel): number | null {
+  const group = activeQuantizerGroup();
+  if (!group) return null;
+  const site =
+    group.sites.find(
+      (candidate) =>
+        candidate.id === activeQuantizerSiteId &&
+        candidate.colorSpace === activeColorSpace,
+    ) ??
+    group.sites.find((candidate) => candidate.colorSpace === activeColorSpace);
+  if (!site) return null;
+
+  if (activeColorSpace === "rgb") {
+    const coord = site.coord as RGB;
+    return (
+      {
+        red: coord.r,
+        green: coord.g,
+        blue: coord.b,
+      } as const
+    )[channel];
+  }
+
+  const coord = site.coord as HsvSiteCoord;
+  return channel === "red"
+    ? Math.round((coord.h / 360) * 255)
+    : channel === "green"
+      ? coord.s
+      : coord.v;
+}
+
+function activeVoronoiTargetHsv(): HsvSiteCoord {
+  const group = activeQuantizerGroup();
+  if (!group) return { h: 0, s: 0, v: 0 };
+  return (
+    (group.outputCoords.hsv as HsvSiteCoord | undefined) ??
+    (siteCoordFromRgb("hsv", group.paletteColor) as HsvSiteCoord)
+  );
+}
+
+function activeVoronoiTargetRgb(): RGB {
+  return activeQuantizerGroup()?.paletteColor ?? { r: 0, g: 150, b: 255 };
+}
+
+function sourceColorForGroup(group: QuantizationGroup): RGB | null {
+  const site =
+    group.sites.find((candidate) => candidate.colorSpace === activeColorSpace) ??
+    null;
+  if (!site) return null;
+  return activeColorSpace === "hsv"
+    ? hsvCoordToRgb(site.coord as HsvSiteCoord)
+    : (site.coord as RGB);
+}
+
+function colorForVoronoiBarValue(channel: Channel, value: number): RGB {
+  const clamped = Math.max(0, Math.min(255, Math.round(value)));
+  if (activeColorSpace === "hsv") {
+    const target = activeVoronoiTargetHsv();
+    if (channel === "red") {
+      return hsvCoordToRgb({
+        h: Math.min(359, Math.round((clamped / 255) * 360)),
+        s: 255,
+        v: 255,
+      });
+    }
+    if (channel === "green") {
+      return hsvCoordToRgb({ h: target.h, s: clamped, v: 255 });
+    }
+    return hsvCoordToRgb({ h: target.h, s: target.s, v: clamped });
+  }
+
+  const target = activeVoronoiTargetRgb();
+  return {
+    r: channel === "red" ? clamped : target.r,
+    g: channel === "green" ? clamped : target.g,
+    b: channel === "blue" ? clamped : target.b,
+  };
+}
+
+function drawVoronoiColorBar(
+  ctx: CanvasRenderingContext2D,
+  canvas: HTMLCanvasElement,
+  channel: Channel,
+) {
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  for (let x = 0; x < canvas.width; x += 1) {
+    const value =
+      canvas.width <= 1 ? 0 : Math.round((x / (canvas.width - 1)) * 255);
+    ctx.fillStyle = rgbToHex(colorForVoronoiBarValue(channel, value));
+    ctx.fillRect(x, 0, 1, canvas.height);
+  }
+}
+
+function drawVoronoiColorBarControls(
+  ctx: CanvasRenderingContext2D,
+  canvas: HTMLCanvasElement,
+  channel: Channel,
+) {
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+  const sourceValue = activeVoronoiSourceChannelValue(channel);
+  if (sourceValue !== null) {
+    const x = Math.max(
+      0.5,
+      Math.min(canvas.width - 0.5, (sourceValue / 255) * canvas.width),
+    );
+    ctx.save();
+    ctx.strokeStyle = "#ffffff";
+    ctx.shadowColor = "rgba(0, 0, 0, 0.72)";
+    ctx.shadowBlur = 3;
+    ctx.lineWidth = 1.25;
+    ctx.beginPath();
+    ctx.moveTo(x, 0);
+    ctx.lineTo(x, canvas.height);
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  const targetValue = targetChannelValue(channel);
+  if (targetValue === null) return;
+
+  const dotRadius = 9.5;
+  const x = Math.max(
+    dotRadius + 2,
+    Math.min(canvas.width - dotRadius - 2, (targetValue / 255) * canvas.width),
+  );
+  const y = canvas.height / 2;
+  const targetColor = rgbToHex(activeVoronoiTargetRgb());
+  ctx.save();
+  ctx.shadowColor = "rgba(0, 0, 0, 0.72)";
+  ctx.shadowBlur = 4;
+  ctx.fillStyle = targetColor;
+  ctx.strokeStyle = "#ffffff";
+  ctx.lineWidth = 2.25;
+  ctx.beginPath();
+  ctx.arc(x, y, dotRadius, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.stroke();
+  ctx.fillStyle = "#ffffff";
+  ctx.beginPath();
+  ctx.moveTo(x, 2);
+  ctx.lineTo(x - 5, 9);
+  ctx.lineTo(x + 5, 9);
+  ctx.closePath();
+  ctx.fill();
+  ctx.beginPath();
+  ctx.moveTo(x, canvas.height - 2);
+  ctx.lineTo(x - 5, canvas.height - 9);
+  ctx.lineTo(x + 5, canvas.height - 9);
+  ctx.closePath();
+  ctx.fill();
+  ctx.restore();
+}
+
 function updateChannelHistogram(channel: UiChannel) {
+  syncChannelTargetReadout(channel);
   const targets = {
     red: {
       bars: { canvas: histogramCanvasRed, ctx: histogramCtxRed },
@@ -1605,24 +3294,6 @@ function updateChannelHistogram(channel: UiChannel) {
   )
     return;
 
-  const cache = getHistogramCache();
-  if (!cache) return;
-
-  const drawRgbAdditiveHistogram =
-    lockChannelsEnabled && activeColorSpace === "rgb" && channel === "red";
-  const thresholds = channelThresholds[channel];
-  const counts =
-    channel === "alpha"
-      ? cache.alpha
-      : lockChannelsEnabled &&
-          isSyncableChannel(channel) &&
-          channel === syncBaseChannelForColorSpace(activeColorSpace)
-        ? cache.combined
-        : lockChannelsEnabled && isSyncableChannel(channel)
-          ? null
-          : cache.perChannel[channel as Channel];
-
-  if (!counts && !drawRgbAdditiveHistogram) return;
   const { bars, controls } = targets;
   const barsCtx = bars.ctx;
   const barsCanvas = bars.canvas;
@@ -1630,6 +3301,36 @@ function updateChannelHistogram(channel: UiChannel) {
   const controlsCanvas = controls.canvas;
 
   if (!barsCtx || !barsCanvas || !controlsCtx || !controlsCanvas) return;
+
+  if (activeProcessingMode === "voronoi" && channel !== "alpha") {
+    drawVoronoiColorBar(barsCtx, barsCanvas, channel);
+    drawVoronoiColorBarControls(controlsCtx, controlsCanvas, channel);
+    return;
+  }
+
+  const cache = getHistogramCache();
+  if (!cache) return;
+
+  const drawRgbAdditiveHistogram =
+    activeProcessingMode === "threshold" &&
+    lockChannelsEnabled &&
+    activeColorSpace === "rgb" &&
+    channel === "red";
+  const thresholds = channelThresholds[channel];
+  const counts =
+    activeProcessingMode !== "threshold" && channel !== "alpha"
+      ? cache.perChannel[channel as Channel]
+      : channel === "alpha"
+        ? cache.alpha
+        : lockChannelsEnabled &&
+            isSyncableChannel(channel) &&
+            channel === syncBaseChannelForColorSpace(activeColorSpace)
+          ? cache.combined
+          : lockChannelsEnabled && isSyncableChannel(channel)
+            ? null
+            : cache.perChannel[channel as Channel];
+
+  if (!counts && !drawRgbAdditiveHistogram) return;
 
   // Clear and draw histogram bars
   const canvasWidth = barsCanvas.width;
@@ -1665,6 +3366,11 @@ function updateChannelHistogram(channel: UiChannel) {
 
   // Clear and draw both thresholds and levels on controls canvas
   controlsCtx.clearRect(0, 0, canvasWidth, canvasHeight);
+
+  if (activeProcessingMode !== "threshold") {
+    drawTargetChannelControl(controlsCtx, controlsCanvas, channel);
+    return;
+  }
 
   // Draw threshold lines
   if (thresholds.length > 0) {
@@ -1738,80 +3444,88 @@ function posterizeImageData(source: ImageData): ImageData {
     source.height,
   );
 
-  let posterized =
-    activeColorSpace === "hsv"
-      ? applyHsvPosterize(
-          working,
-          {
-            H: channelLevels.red,
-            S: channelLevels.green,
-            V: channelLevels.blue,
-          },
-          {
-            H:
-              channelThresholds.red.length === channelLevels.red - 1
-                ? channelThresholds.red
-                : createEvenThresholds(channelLevels.red),
-            S:
-              channelThresholds.green.length === channelLevels.green - 1
-                ? channelThresholds.green
-                : createEvenThresholds(channelLevels.green),
-            V:
-              channelThresholds.blue.length === channelLevels.blue - 1
-                ? channelThresholds.blue
-                : createEvenThresholds(channelLevels.blue),
-          },
-          {
-            H:
-              channelOutputs.red.length === channelLevels.red
-                ? channelOutputs.red
-                : undefined,
-            S:
-              channelOutputs.green.length === channelLevels.green
-                ? channelOutputs.green
-                : undefined,
-            V:
-              channelOutputs.blue.length === channelLevels.blue
-                ? channelOutputs.blue
-                : undefined,
-          },
-        )
-      : applyBasicPosterize(
-          working,
-          {
-            R: channelLevels.red,
-            G: channelLevels.green,
-            B: channelLevels.blue,
-          },
-          {
-            R:
-              channelThresholds.red.length === channelLevels.red - 1
-                ? channelThresholds.red
-                : createEvenThresholds(channelLevels.red),
-            G:
-              channelThresholds.green.length === channelLevels.green - 1
-                ? channelThresholds.green
-                : createEvenThresholds(channelLevels.green),
-            B:
-              channelThresholds.blue.length === channelLevels.blue - 1
-                ? channelThresholds.blue
-                : createEvenThresholds(channelLevels.blue),
-          },
-          {
-            R:
-              channelOutputs.red.length === channelLevels.red
-                ? channelOutputs.red
-                : undefined,
-            G:
-              channelOutputs.green.length === channelLevels.green
-                ? channelOutputs.green
-                : undefined,
-            B:
-              channelOutputs.blue.length === channelLevels.blue
-                ? channelOutputs.blue
-                : undefined,
-          },
-        );
+  let posterized: ImageData;
+
+  if (activeProcessingMode === "voronoi") {
+    posterized = applyVoronoiQuantization(working);
+  } else if (activeProcessingMode === "bezier") {
+    posterized = applyBezierQuantization(working);
+  } else {
+    posterized =
+      activeColorSpace === "hsv"
+        ? applyHsvPosterize(
+            working,
+            {
+              H: channelLevels.red,
+              S: channelLevels.green,
+              V: channelLevels.blue,
+            },
+            {
+              H:
+                channelThresholds.red.length === channelLevels.red - 1
+                  ? channelThresholds.red
+                  : createEvenThresholds(channelLevels.red),
+              S:
+                channelThresholds.green.length === channelLevels.green - 1
+                  ? channelThresholds.green
+                  : createEvenThresholds(channelLevels.green),
+              V:
+                channelThresholds.blue.length === channelLevels.blue - 1
+                  ? channelThresholds.blue
+                  : createEvenThresholds(channelLevels.blue),
+            },
+            {
+              H:
+                channelOutputs.red.length === channelLevels.red
+                  ? channelOutputs.red
+                  : undefined,
+              S:
+                channelOutputs.green.length === channelLevels.green
+                  ? channelOutputs.green
+                  : undefined,
+              V:
+                channelOutputs.blue.length === channelLevels.blue
+                  ? channelOutputs.blue
+                  : undefined,
+            },
+          )
+        : applyBasicPosterize(
+            working,
+            {
+              R: channelLevels.red,
+              G: channelLevels.green,
+              B: channelLevels.blue,
+            },
+            {
+              R:
+                channelThresholds.red.length === channelLevels.red - 1
+                  ? channelThresholds.red
+                  : createEvenThresholds(channelLevels.red),
+              G:
+                channelThresholds.green.length === channelLevels.green - 1
+                  ? channelThresholds.green
+                  : createEvenThresholds(channelLevels.green),
+              B:
+                channelThresholds.blue.length === channelLevels.blue - 1
+                  ? channelThresholds.blue
+                  : createEvenThresholds(channelLevels.blue),
+            },
+            {
+              R:
+                channelOutputs.red.length === channelLevels.red
+                  ? channelOutputs.red
+                  : undefined,
+              G:
+                channelOutputs.green.length === channelLevels.green
+                  ? channelOutputs.green
+                  : undefined,
+              B:
+                channelOutputs.blue.length === channelLevels.blue
+                  ? channelOutputs.blue
+                  : undefined,
+            },
+          );
+  }
 
   if (posterizeAlphaEnabled) {
     const levels = channelLevels.alpha;
@@ -1824,6 +3538,28 @@ function posterizeImageData(source: ImageData): ImageData {
     posterized = applyAlphaPosterize(posterized, levels, thresholds, outputs);
   }
   return posterized;
+}
+
+function applyVoronoiQuantization(source: ImageData): ImageData {
+  const image = analyzeImageData(source);
+  const stats = computeVoronoiAssignments(
+    image,
+    quantizerGroups,
+    activeColorSpace,
+  );
+  renderQuantizerStats(image);
+  return renderVoronoiImage(image, quantizerGroups, stats);
+}
+
+function applyBezierQuantization(source: ImageData): ImageData {
+  const image = analyzeImageData(source);
+  const stats = computeBezierAssignments(
+    image,
+    bezierRegions,
+    activeColorSpace,
+  );
+  renderQuantizerStats(image);
+  return renderBezierImage(image, bezierRegions, stats);
 }
 
 /**
@@ -1841,9 +3577,22 @@ function renderPosterized() {
   if (outputCanvas.height !== posterizeSource.height) {
     outputCanvas.height = posterizeSource.height;
   }
+  if (
+    quantizerOverlayCanvas &&
+    quantizerOverlayCanvas.width !== posterizeSource.width
+  ) {
+    quantizerOverlayCanvas.width = posterizeSource.width;
+  }
+  if (
+    quantizerOverlayCanvas &&
+    quantizerOverlayCanvas.height !== posterizeSource.height
+  ) {
+    quantizerOverlayCanvas.height = posterizeSource.height;
+  }
 
   const posterized = posterizeImageData(posterizeSource);
   outputCtx.putImageData(posterized, 0, 0);
+  renderQuantizerOverlay();
 }
 
 function getPreviewDimensions(width: number, height: number) {
@@ -1853,20 +3602,12 @@ function getPreviewDimensions(width: number, height: number) {
   const rect = comparisonStage.getBoundingClientRect();
   const maxWidth = Math.max(1, Math.floor(rect.width || width));
   const maxHeight = Math.max(1, Math.floor(rect.height || height));
-  const scale = Math.min(1, maxWidth / width, maxHeight / height);
+  const scale = Math.min(maxWidth / width, maxHeight / height);
   return {
     width: Math.max(1, Math.round(width * scale)),
     height: Math.max(1, Math.round(height * scale)),
     scale,
   };
-}
-
-function setImageAspect(width: number, height: number) {
-  if (!comparisonStage || width <= 0 || height <= 0) return;
-  comparisonStage.style.setProperty(
-    "--image-aspect",
-    (width / height).toString(),
-  );
 }
 
 function buildPreviewFromFullResolution() {
@@ -1902,10 +3643,17 @@ function buildPreviewFromFullResolution() {
   originalImageRevision += 1;
   preprocessedImageCache = null;
   histogramCache = null;
+  if (activeProcessingMode === "voronoi") {
+    rehydrateVoronoiSitesForActiveColorSpace();
+  }
 
   if (outputCanvas) {
     outputCanvas.width = width;
     outputCanvas.height = height;
+  }
+  if (quantizerOverlayCanvas) {
+    quantizerOverlayCanvas.width = width;
+    quantizerOverlayCanvas.height = height;
   }
 
   renderPosterized();
@@ -1943,7 +3691,6 @@ function drawFromSource(
       fullCanvas.height,
     );
     originalImageData = null;
-    setImageAspect(fullCanvas.width, fullCanvas.height);
 
     // Save image data to localStorage if requested
     if (saveToStorage && src !== DEFAULT_IMAGE) {
@@ -2089,6 +3836,15 @@ function attachUnifiedDragHandlers(
   };
 
   const updateCursor = (x: number, y: number) => {
+    if (usesHistogramTargetControls() && channel !== "alpha") {
+      canvas.style.cursor = "col-resize";
+      return;
+    }
+    if (activeProcessingMode !== "threshold") {
+      canvas.style.cursor = "default";
+      return;
+    }
+
     const thresholdIndex = isOverThreshold(x);
     const levelIndex = isOverLevelHandle(x, y);
 
@@ -2146,6 +3902,15 @@ function attachUnifiedDragHandlers(
           updateAllHistograms();
           renderPosterized();
         }
+      } else if (
+        dragState.type === "target" &&
+        channel !== "alpha" &&
+        usesHistogramTargetControls()
+      ) {
+        const scaleX = canvas.width / rect.width;
+        const canvasX = x * scaleX;
+        const value = (canvasX / canvas.width) * 255;
+        setTargetChannelValue(channel, value);
       }
       event.preventDefault();
       return;
@@ -2170,7 +3935,21 @@ function attachUnifiedDragHandlers(
     const thresholdIndex = isOverThreshold(x);
     const levelIndex = isOverLevelHandle(x, y);
 
-    if (thresholdIndex >= 0) {
+    if (usesHistogramTargetControls() && channel !== "alpha") {
+      dragState = {
+        channel,
+        index: 0,
+        pointerId: event.pointerId,
+        type: "target",
+      };
+      canvas.setPointerCapture(event.pointerId);
+      const scaleX = canvas.width / rect.width;
+      const canvasX = x * scaleX;
+      setTargetChannelValue(channel, (canvasX / canvas.width) * 255);
+      event.preventDefault();
+    } else if (activeProcessingMode !== "threshold") {
+      event.preventDefault();
+    } else if (thresholdIndex >= 0) {
       dragState = {
         channel,
         index: thresholdIndex,
@@ -2231,6 +4010,20 @@ attachUnifiedDragHandlers(controlsCanvasGreen, "green");
 attachUnifiedDragHandlers(controlsCanvasBlue, "blue");
 attachUnifiedDragHandlers(controlsCanvasAlpha, "alpha");
 
+document.addEventListener("keydown", (event) => {
+  if (
+    event.key.toLowerCase() !== "n" ||
+    event.altKey ||
+    event.ctrlKey ||
+    event.metaKey ||
+    isTextEntryTarget(event.target)
+  ) {
+    return;
+  }
+  event.preventDefault();
+  toggleFloatingToolbar();
+});
+
 lockToggle?.addEventListener("change", () => {
   toggleLockChannels(lockToggle.checked);
 });
@@ -2240,6 +4033,45 @@ colorSpaceSelect?.addEventListener("change", () => {
   if (raw === "rgb" || raw === "hsv") {
     setColorSpace(raw);
   }
+});
+
+processingModeSelect?.addEventListener("change", () => {
+  const raw = processingModeSelect.value;
+  if (raw === "threshold" || raw === "voronoi") {
+    setProcessingMode(raw);
+  }
+});
+
+addQuantizerGroupBtn?.addEventListener("click", () => {
+  addQuantizerGroup();
+});
+
+deleteQuantizerGroupBtn?.addEventListener("click", () => {
+  deleteActiveQuantizerGroup();
+});
+
+voronoiSourceModeBtn?.addEventListener("click", () => {
+  setVoronoiEditMode("source");
+});
+
+voronoiTargetModeBtn?.addEventListener("click", () => {
+  setVoronoiEditMode("target");
+});
+
+addBezierRegionBtn?.addEventListener("click", () => {
+  addBezierRegion();
+});
+
+closeBezierRegionBtn?.addEventListener("click", () => {
+  closeActiveBezierRegion();
+});
+
+deleteBezierRegionBtn?.addEventListener("click", () => {
+  deleteActiveBezierRegion();
+});
+
+quantizerResetBtn?.addEventListener("click", () => {
+  resetQuantizerState();
 });
 
 smoothingInput?.addEventListener("input", () => {
@@ -2337,6 +4169,11 @@ resetBtn?.addEventListener("click", () => {
   localStorage.removeItem(ALPHA_STORAGE_KEY);
   localStorage.removeItem(SMOOTHING_STORAGE_KEY);
   setSmoothingAmount(0, { saveToStorage: false, rerender: false });
+  activeProcessingMode = "voronoi";
+  activeVoronoiEditMode = "source";
+  if (processingModeSelect) processingModeSelect.value = activeProcessingMode;
+  voronoiSampleRadius = 1;
+  resetQuantizerState();
   togglePosterizeAlpha(false);
   resetChannelLevels();
   if (!fullResolutionImageData) {
@@ -2352,6 +4189,9 @@ function initializeApp() {
   }
   if (colorSpaceSelect) {
     colorSpaceSelect.value = activeColorSpace;
+  }
+  if (processingModeSelect) {
+    processingModeSelect.value = activeProcessingMode;
   }
 
   const savedAlpha = localStorage.getItem(ALPHA_STORAGE_KEY);
@@ -2381,6 +4221,7 @@ function initializeApp() {
   }
 
   applyLockStateToUI();
+  renderQuantizerControls();
 }
 
 // Start the application

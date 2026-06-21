@@ -35,47 +35,29 @@
 
       <main class="workspace">
         <section class="preview-pane" aria-label="Image preview">
-          <div class="comparison-toolbar">
-            <div class="comparison-title">Original / Preview</div>
-            <div class="comparison-slider">
-              <span>Original</span>
-              <input
-                type="range"
-                id="comparisonSlider"
-                min="0"
-                max="100"
-                value="50"
-                aria-label="Preview reveal"
-              />
-              <span>Preview</span>
-            </div>
-          </div>
           <div class="comparison-stage" id="comparisonStage">
-            <canvas id="originalCanvas" class="comparison-canvas"></canvas>
-            <div class="preview-overlay">
-              <canvas id="processedCanvas" class="comparison-canvas"></canvas>
-            </div>
-            <div class="slider-indicator" aria-hidden="true"></div>
-          </div>
-        </section>
-
-        <aside class="controls-pane">
-          <section class="settings-panel" aria-label="Settings">
-            <div class="settings-grid">
-              <label class="field-block">
+            <div class="floating-mode-toolbar" aria-label="Mode toolbar">
+              <label class="field-block toolbar-preset">
                 <span>Preset</span>
                 <select id="presetsSelect">
                   <option value="">Custom</option>
                 </select>
               </label>
-              <label class="field-block">
+              <label class="field-block toolbar-space">
                 <span>Space</span>
                 <select id="colorSpaceSelect">
                   <option value="rgb">RGB</option>
                   <option value="hsv">HSV</option>
                 </select>
               </label>
-              <label class="field-block smoothing-control">
+              <label class="field-block toolbar-engine">
+                <span>Engine</span>
+                <select id="processingModeSelect">
+                  <option value="threshold">Thresholds</option>
+                  <option value="voronoi" selected>Voronoi</option>
+                </select>
+              </label>
+              <label class="field-block toolbar-smoothing">
                 <span>Smoothing</span>
                 <div class="range-with-value">
                   <input
@@ -97,24 +79,83 @@
                   />
                 </div>
               </label>
-            </div>
-            <div class="preset-description"></div>
-            <div class="toggle-row">
-              <label class="toggle-control">
-                <input type="checkbox" id="posterizeAlphaToggle" />
-                <span class="toggle-slider"></span>
-                <span>Alpha</span>
+              <div class="toolbar-toggle-row">
+                <label class="toggle-control">
+                  <input type="checkbox" id="posterizeAlphaToggle" />
+                  <span class="toggle-slider"></span>
+                  <span>Alpha</span>
+                </label>
+                <label class="toggle-control toolbar-sync-toggle">
+                  <input type="checkbox" id="lockChannelsToggle" />
+                  <span class="toggle-slider"></span>
+                  <span id="syncChannelsLabel">Sync RGB</span>
+                </label>
+              </div>
+              <label class="field-block toolbar-preview">
+                <span>Reveal</span>
+                <div class="comparison-slider">
+                  <span>Original</span>
+                  <input
+                    type="range"
+                    id="comparisonSlider"
+                    min="0"
+                    max="100"
+                    value="50"
+                    aria-label="Preview reveal"
+                  />
+                  <span>Preview</span>
+                </div>
               </label>
-              <label class="toggle-control">
-                <input type="checkbox" id="lockChannelsToggle" />
-                <span class="toggle-slider"></span>
-                <span id="syncChannelsLabel">Sync RGB</span>
-              </label>
             </div>
-            <div class="mode-warning" id="hueModeWarning" hidden>
-              Hue uses 0-360 degree controls and is not synced with Saturation /
-              Value.
+            <canvas id="originalCanvas" class="comparison-canvas"></canvas>
+            <div class="preview-overlay">
+              <canvas id="processedCanvas" class="comparison-canvas"></canvas>
             </div>
+            <canvas
+              id="quantizerOverlayCanvas"
+              class="quantizer-overlay-canvas"
+            ></canvas>
+            <div class="canvas-warning-overlay" id="canvasStatusOverlay" hidden></div>
+            <div class="slider-indicator" aria-hidden="true"></div>
+          </div>
+        </section>
+
+        <aside class="controls-pane">
+          <section
+            class="settings-panel quantizer-panel"
+            id="quantizerPanel"
+            aria-label="Quantiator controls"
+            hidden
+          >
+            <div class="quantizer-header">
+              <h2 id="quantizerTitle">Voronoi</h2>
+              <button id="quantizerResetBtn" type="button">Reset Engine</button>
+            </div>
+            <div class="quantizer-actions" id="voronoiActions">
+              <div class="segmented-control" aria-label="Voronoi edit mode">
+                <button
+                  id="voronoiSourceModeBtn"
+                  type="button"
+                  class="segment-button active"
+                >
+                  Source
+                </button>
+                <button
+                  id="voronoiTargetModeBtn"
+                  type="button"
+                  class="segment-button"
+                >
+                  Target
+                </button>
+              </div>
+              <button id="addQuantizerGroupBtn" type="button">New Index</button>
+              <button id="deleteQuantizerGroupBtn" type="button">
+                Delete Index
+              </button>
+            </div>
+            <div class="quantizer-editor" id="quantizerEditor"></div>
+            <div class="quantizer-list" id="quantizerList"></div>
+            <div class="quantizer-stats" id="quantizerStats"></div>
           </section>
 
           <section id="histograms" aria-label="Channel controls">
