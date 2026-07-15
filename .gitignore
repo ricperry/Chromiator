@@ -1,5 +1,3 @@
-node_modules/
-.vite/
-dist/
-coverage/
-*.log
+/target/
+/tests/artifacts/
+*.threshiator

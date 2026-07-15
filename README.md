@@ -1,148 +1,96 @@
 # Threshiator
 
-A browser-based laboratory for exploring the "Threshiator" effect with advanced PNG metadata embedding capabilities. This prototype focuses on fast iteration for posterization workflows with live histograms, per-channel thresholds, and per-band tonal controls across multiple color spaces. The goal is to nail the feel of the core effect in the browser before porting the logic to other hosts such as G'MIC or Krita.
+Threshiator is a native GTK 4/libadwaita posterization studio for Fedora GNOME. Independent Voronoi color sites are the default creative method; variable-band RGB and HSV Thresholds are a first-class alternate. Both method states persist in a straight-alpha linear-sRGB `RGBA f32` pipeline.
 
-## Example Output
+The welcome screen offers three direct starts: **Open Image**, **Open Threshiator Project**, or **Try Spectrum Example**. The included Spectrum artwork is compiled into the native application and opens as a clean, pathless document through the same raster decoding and default Voronoi initialization used by imported images.
 
-These examples use [SpectrumBreakpoint.png](SpectrumBreakpoint.png) as the source image and show the same input pushed through different Threshiator settings.
+## Build and run
 
-| Source                                                                                | Demo 1                                                            | Demo 2                                                            | Demo 3                                                            |
-| ------------------------------------------------------------------------------------- | ----------------------------------------------------------------- | ----------------------------------------------------------------- | ----------------------------------------------------------------- |
-| <img src="SpectrumBreakpoint.png" alt="Spectrum Breakpoint source image" width="220"> | <img src="Demo1.png" alt="Threshiator demo output 1" width="220"> | <img src="Demo2.png" alt="Threshiator demo output 2" width="220"> | <img src="Demo3.png" alt="Threshiator demo output 3" width="220"> |
+Install Rust plus the GTK 4 and libadwaita development packages, then:
 
-## Features
-
-### Core Functionality
-
-- **Live dual-canvas preview** – Original image and processed output stay visible side-by-side so you can inspect the source while tweaking levels.
-- **RGB/HSV histograms with draggable dividers** – Each channel shows a 256-bin histogram sourced from the original image (in the selected posterize space) plus draggable vertical guides to adjust band thresholds.
-- **Per-channel level steppers** – Quickly change the number of bands per channel with compact increment/decrement controls.
-- **Per-band output sliders** – Each band exposes a 0–255 output slider enabling aggressive tonal remapping, including inverted or duotone looks.
-- **Instant feedback loop** – All controls feed directly into the processed canvas; no Apply button required.
-- **Synchronize toggle** – Optionally link all channels together and edit a single combined histogram/control stack.
-- **Summed histogram view** – When channels are synchronized, the histogram shows the combined distribution for quick global adjustments.
-- **Optional alpha posterization** – Enable an Alpha panel and posterize alpha with the same thresholds/bands/outputs as the other channels (leave disabled to preserve source alpha).
-
-### PNG Metadata System
-
-- **Save Image with embedded settings** – Export processed images as PNG files with Threshiator settings embedded as metadata chunks (similar to ComfyUI workflows).
-- **Import settings from PNG** – Load Threshiator settings directly from PNG files created by the application.
-- **ComfyUI-style workflow embedding** – Settings are stored in PNG tEXt chunks for maximum compatibility and shareability.
-
-### Preset Management
-
-- **Manifest-based preset system** – Both JSON and PNG presets are managed through a simple `manifest.json` file.
-- **Built-in presets** – Comic Book, Duotone Blue, Vintage Photo, Noir, and Pop Art effects included.
-- **User-extensible presets** – Add your own JSON or PNG presets by updating the manifest file.
-- **No code changes required** – Users can add presets without modifying application code.
-
-### File Support
-
-- **Import/Export JSON settings** – Save and load posterize configurations as JSON files.
-- **PNG preset discovery** – Automatically loads PNG files with embedded Threshiator metadata.
-- **Dual format support** – Seamlessly handles both JSON and PNG preset formats.
-- **Sample image + file loader** – The app boots with `test.png` for quick testing and also supports loading your own images through the file picker.
-
-## Tech Stack
-
-- [Vite](https://vitejs.dev/) + TypeScript for the application scaffolding
-- Canvas 2D rendering for image processing and histograms
-- ESLint + Prettier for linting and formatting
-- Vitest for focused unit coverage of the posterize kernel
-
-## Getting Started
-
-```bash
-npm install
-npm run dev
+```sh
+cargo run --release
 ```
 
-The dev server launches at <http://localhost:5173>. Load an image (or use the default), tweak thresholds and band outputs, and watch the processed canvas update in real time.
+Checks:
 
-### Color Spaces + Alpha
-
-- Use **Posterize Space** to switch between **RGB (R/G/B)** and **HSV (H/S/V)** posterization; the three channel panels map to the selected space.
-- Enable **Posterize Alpha** to reveal the Alpha panel; when disabled, alpha remains unchanged.
-
-### Using PNG Metadata
-
-1. **Create your perfect effect** by adjusting posterize settings
-2. **Click "Save Image"** to export PNG with embedded settings
-3. **Share the PNG file** - anyone can load your exact settings by importing the PNG
-4. **Import settings** by clicking "Import Settings" and selecting either `.json` or `.png` files
-
-### Adding Custom Presets
-
-To add your own presets to the dropdown:
-
-**For JSON presets:**
-
-1. Create a JSON file in `/presets/` with this structure:
-
-```json
-{
-  "name": "My Effect",
-  "description": "Description of the effect",
-  "settings": {
-    /* ExportSettings object */
-  }
-}
+```sh
+cargo fmt --check
+cargo clippy --all-targets --all-features -- -D warnings
+cargo test
+cargo build
 ```
 
-2. Add the filename to `jsonPresets` array in `/presets/manifest.json`
-3. Refresh the page
+The app-owned interactive stability audit runs every scenario in a disposable GTK process with an external heartbeat watchdog:
 
-**For PNG presets:**
+```sh
+python3 scripts/run_ui_audit.py
+```
 
-1. Create your effect and save as PNG using "Save Image"
-2. Copy the PNG file to `/presets/` folder
-3. Add the filename to `pngPresets` array in `/presets/manifest.json`
-4. Refresh the page
+Its JSONL logs and `summary.json` are stored under `tests/artifacts/audit/`; the full coverage matrix and known manual-only paths are documented in [`docs/FUNCTIONAL_AUDIT.md`](docs/FUNCTIONAL_AUDIT.md). It exercises actual widget methods and signals for the shell, Threshold inspector/dialog, Voronoi controls, picker, I/O lock, and a narrow window. It does not claim real pointer gestures or portal chooser completion.
 
-PNG presets appear with a 📁 folder icon in the dropdown.
+Deterministic command-driven UI evidence can be produced without pointer automation:
 
-## Available Scripts
+```sh
+cargo run --release -- --open image.png --method voronoi --view split \
+  --window-size 1180x760 --select-site 1 \
+  --screenshot evidence.png --quit-after-screenshot
+```
 
-- `npm run dev` – start the Vite development server
-- `npm run build` – produce a production build in `dist/`
-- `npm run preview` – preview the production build locally
-- `npm run lint` – run ESLint with the TypeScript rule set
-- `npm run typecheck` – run TypeScript without emitting files
-- `npm run format` – apply Prettier formatting
-- `npm run test` – run Vitest unit tests
+Supported evidence controls are `--open`/`--project`, `--example`, `--method`, `--view`, `--window-size`, `--select-site` (with `--select-group` and `--select-sample` retained as compatibility aliases), `--sampling-state`, `--hue`, `--voronoi-matching perceptual|rgb|hsv`, `--threshold-space rgb|hsv`, `--threshold-link linked|independent`, `--threshold-component red|green|blue|hue|saturation|value`, `--threshold-bands 2..32`, `--threshold-bypass COMPONENT`, `--show-threshold-editor`, `--threshold-editor-target red|green|blue|linked-rgb|hue|saturation|value|linked-sv`, `--threshold-editor-handle boundary:N|output:N`, `--show-color-picker`, `--color-model hsv|hsl|oklab`, `--picker-lightness 0..1`, `--screenshot`, and `--quit-after-screenshot`. Screenshot sidecars expose every independent Voronoi site's ID/order, Source, Target, Influence, lock, optional position, and sampling footprint. With no input, screenshot mode captures the welcome screen.
 
-## Architecture
+The historical browser demonstrator is runnable from [`archive/webapp`](archive/webapp/README.md).
 
-### PNG Metadata Implementation
+## Current image contract
 
-- **PNG tEXt chunks** store JSON settings with keyword "Threshiator"
-- **CRC32 validation** ensures data integrity
-- **ComfyUI-compatible** metadata embedding approach
-- **Fallback handling** for PNGs without metadata
+Inputs are still PNG, JPEG, TIFF, WebP, BMP, and single-frame GIF. SVG and animated GIF are rejected explicitly. Grayscale and grayscale-alpha inputs expand to RGBA. Decoded color samples are interpreted as encoded sRGB and converted once to linear-sRGB `f32`; alpha remains straight and is preserved.
 
-### Preset System
+Embedded ICC data is detected through the selected decoder but is not transformed in this milestone. The application labels that limitation; untagged images default to sRGB. It does not claim profile preservation. Display conversion is the only preview quantization step: linear straight-alpha pixels become straight encoded-sRGB RGBA8 for GdkPixbuf, preserving RGB accuracy even at low alpha.
 
-- **Manifest-driven** loading from `/presets/manifest.json`
-- **Dual format support** for JSON and PNG presets
-- **No hardcoded filenames** - fully user-extensible
-- **Graceful fallbacks** to built-in presets if manifest fails
+Exports currently supported:
 
-## Roadmap Ideas
+| Destination | Samples | Color representation |
+| --- | --- | --- |
+| PNG | 8-bit integer per channel RGBA | encoded sRGB, tagged sRGB |
+| PNG | 16-bit integer per channel RGBA | encoded sRGB, tagged sRGB |
+| OpenEXR | 32-bit float per channel RGBA | linear sRGB values; no ICC claim |
 
-See [docs/TODO.md](docs/TODO.md) for active cleanup, feature, performance, and porting tasks.
+JPEG and other export formats are intentionally unavailable rather than silently down-converted. All project and image writes use a temporary file in the destination directory followed by atomic replacement.
 
-## Contributing / Notes
+## Processing model
 
-This repo operates as an interactive sketchpad. Durable project context lives in
-[docs/HISTORY.md](docs/HISTORY.md), and current work is tracked in
-[docs/TODO.md](docs/TODO.md). Pull requests are welcome, but expect rapid
-refactors as the effect firmly takes shape.
+New images deterministically initialize up to four materially distinct independent Voronoi sites from a bounded OKLab clustering proxy, then sample authoritative full-resolution pixels at representative normalized locations. Each site owns a canonical linear-sRGB `f32` Source, its own Target, Influence, lock, stable ID/order, optional normalized marker position, and sampling footprint. Source sampling accepts any positive footprint alpha and computes alpha-weighted RGB; new and resampled sites begin with Target equal to Source. Point, 3×3, and 5×5 footprints are available.
 
-## License
+Processing derives OKLab, encoded-sRGB RGB, and HSV coordinates from canonical Source values for every compiled recipe; no per-space coordinate cache is serialized. HSV uses the true cylinder `(S·cos(H), S·sin(H), V)`. Influence retains the weighted rule `distance² × 2^-clamp(Influence,-4,4)`, and ties resolve by stable order then ID. Every visible pixel is assigned directly to the winning site's Target; coverage is reported by site ID. Transparent pixels remain canonical.
 
-Threshiator is free software licensed under the GNU General Public License,
-version 3 or, at your option, any later version.
+Source and Target are edited separately with the transactional color picker. Replacing Source by drag, nudge, resample, footprint change, or direct edit always resets Target to the new Source; a direct Source edit also detaches the old image position. Lock protects Source, Target, Influence, footprint, marker movement, and deletion without promising a fixed boundary when neighboring sites or the global matching mode change. Lock/unlock marks the project dirty but schedules no image work. Presets and undo remain separate tracked work.
 
-Copyright (C) 2026 Richard Perry.
+Thresholds retain independent RGB and HSV states when the Working space changes. Every logical component has a visible Process/Bypass state and 2–32 Bands. **Edit mapping…** opens a dedicated adaptive dialog with a focusable Input → Output transfer plot: vertical blue handles edit Boundaries and horizontal red handles edit each Band's Output. The selected handle also has a precise numeric control; Hue is displayed in degrees while remaining normalized internally. Pointer motion changes only the dialog draft, then one preview is scheduled on release. A numeric or keyboard adjustment similarly schedules one completed update. Done retains the live edits; Cancel, Escape, or window close restores the pre-dialog Threshold state and dirty flag, scheduling a restoring preview only when an edit had been committed.
 
-See [LICENSE](LICENSE) for the complete license terms.
+A value exactly on a Boundary belongs to the lower Band. Link RGB and Link Saturation & Value copy future edits and Band changes without copying Process/Bypass flags; hue is never linked. The dialog uses semantic targets rather than dropdown positions: linked RGB appears as **Red, Green & Blue**, and linked HSV appears as separate **Hue** and **Saturation & Value** targets. Enabling or disabling Link immediately reconciles that target menu without processing an image merely because the selection changed.
+
+New RGB work quantizes floating-point encoded sRGB and converts directly back to canonical linear-sRGB `f32`, with no intermediate integer quantization. HSV operates over encoded sRGB: S and V are linear from 0 to 1, hue is circular and shown in degrees, and hue quantization cannot tint achromatic input. Bypassed components survive the required working-space round trip within floating-point tolerance. Alpha remains straight and preserved; transparent RGB is canonicalized. Alpha quantization and input smoothing are represented for schema evolution but intentionally deferred. Common hue rotation still uses floating-point degrees in OKLCH; out-of-gamut results are clipped to linear sRGB. Creative recipe changes mark the document dirty; comparison and divider changes do not.
+
+Interactive previews are bounded to 1600 pixels on their longest edge and use cheaply shared pixel storage, while attached site Source colors always come from the authoritative full-resolution image. Saving and full-resolution export keep the authoritative source and embedded bytes intact; export reprocesses that full-resolution source through the active method off the GTK main thread. Markers and selection affordances never export.
+
+Active open, save, and full-resolution export jobs can be cancelled. Third-party codec calls are not themselves preemptible; cancellation invalidates the job immediately, discards any codec result or temporary output, and prevents destination replacement.
+
+While an open, save, or export job owns the document, the document workspace is insensitive and footer Cancel remains available. A file operation is rejected while a modal creative dialog is open, so the dialog can never hide an unreachable job-cancellation control. This prevents edits from racing a stale save snapshot or an incoming document replacement. A second job request is also rejected gracefully rather than panicking. The Stability & Observability milestone removed callback-driven model recreation from the Threshold target and Voronoi Source sample dropdowns; both now use stable, idempotently synchronized models.
+
+## Projects and resuming work
+
+`.threshiator` v4 is the canonical editable project format. It stores the original source bytes, source interpretation, complete RGB and HSV Threshold states, independent Voronoi sites, the active method, downstream common hue, and export defaults. Version-3 Color groups migrate by flattening every Source sample into an independent site that inherits the former group Target; empty groups are dropped, locks default off, stable sample IDs/order and sampling metadata are retained, and the next site ID is collision-safe. Version-2 projects additionally migrate to the exact `LinearSrgbLegacy` three-band Threshold path so their existing pixels do not change. Current projects validate unique IDs/order, finite/ranged Source, Target, Influence and positions, plus a safe next ID. Opening a project restores the recipe without rerunning initialization. The old browser JSON format is not imported yet.
+
+Open Image, Open Project, and Try Spectrum Example share one replacement guard. A dirty document offers Save, Discard, or Cancel. Save performs the requested replacement only after a successful project write; a cancelled or failed save keeps the current document.
+
+## Output color picker
+
+Click an Output color swatch to open Threshiator's draft color picker. HSV is the default model; HSL and OKLab are available without changing the underlying canonical draft, which remains floating-point linear sRGB. HSV/HSL operate over encoded sRGB. The OKLab plane uses fixed-lightness polar a/b geometry, visibly hatches out-of-sRGB areas, and projects drags to the valid gamut boundary. Hex accepts `#RGB` and `#RRGGBB`; displaying hex never replaces the higher-precision draft.
+
+The three slider/precision rows stay synchronized with the color plane and hex entry. Achromatic edits retain latent hue. The wheel is focusable: arrows adjust it, Shift provides fine adjustment, and Home returns to neutral. Original and New swatches make the pending change explicit. Select commits once and schedules one preview; Cancel, Escape, or closing the dialog makes no document, dirty-state, or scheduler change. Source alpha is not editable and passes through unchanged.
+
+## Forward color direction (deferred)
+
+Threshiator is an intermediate creative tool, so its long-term color policy favors preserving palette intent for finishing elsewhere. Familiar RGB and HSV editing remain primary; OKLCH is planned as an optional **Perceptual** picker representation, while Cartesian OKLab remains the perceptual Voronoi metric. An extended-gamut selected color should remain distinct from the nearest proxy the current display path can render. The project keeps the selected floating-point intent; a constrained export applies an explicit format-specific gamut policy.
+
+The existing shared `f32` pipeline is retained as the precision foundation, but wide gamut must not be described as HDR. A credible HDR handoff additionally requires declared primaries, white point, luminance semantics, transfer behavior, and format metadata. The current linear-sRGB OpenEXR export is useful as a high-precision intermediate, but its present “no ICC claim” contract is not a finished HDR workflow. PQ/HLG, Rec.2020, display profiling, and tone mapping remain deferred until a dedicated workflow justifies them. HWB and other picker models are not planned merely for completeness.

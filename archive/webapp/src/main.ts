@@ -287,6 +287,11 @@ let bezierRegions: BezierRegion[] = [];
 let activeBezierRegionId: string | null = null;
 let quantizerRevision = 0;
 let voronoiSampleRadius = 1;
+type VoronoiFocusZoomScale = 1 | 2;
+let voronoiFocusZoom: {
+  siteId: string;
+  scale: VoronoiFocusZoomScale;
+} | null = null;
 let draggedImageSite: {
   siteId: string;
   pointerId: number;
@@ -545,6 +550,123 @@ function setFloatingOverlayVisible(visible: boolean) {
 
 function toggleFloatingToolbar() {
   setFloatingOverlayVisible(!floatingOverlayVisible);
+}
+
+function activeVoronoiFocusSite() {
+  const site = findQuantizerSite(voronoiFocusZoom?.siteId ?? null);
+  return site?.samplePoint ? site : null;
+}
+
+function previewImageElements(): HTMLElement[] {
+  return [sourceCanvas, outputCanvas, quantizerOverlayCanvas].filter(
+    (element): element is HTMLCanvasElement => Boolean(element),
+  );
+}
+
+function applyPreviewImagePlacement(
+  left: number,
+  top: number,
+  width: number,
+  height: number,
+) {
+  for (const element of previewImageElements()) {
+    element.style.inset = "auto";
+    element.style.left = `${left}px`;
+    element.style.top = `${top}px`;
+    element.style.width = `${width}px`;
+    element.style.height = `${height}px`;
+    element.style.objectFit = "fill";
+  }
+}
+
+function clearPreviewImagePlacement() {
+  for (const element of previewImageElements()) {
+    element.style.removeProperty("inset");
+    element.style.removeProperty("left");
+    element.style.removeProperty("top");
+    element.style.removeProperty("width");
+    element.style.removeProperty("height");
+    element.style.removeProperty("object-fit");
+  }
+}
+
+function drawFullResolutionSourceCanvas() {
+  if (!sourceCanvas || !sourceCtx || !fullResolutionImageData) return;
+  if (sourceCanvas.width !== fullResolutionImageData.width) {
+    sourceCanvas.width = fullResolutionImageData.width;
+  }
+  if (sourceCanvas.height !== fullResolutionImageData.height) {
+    sourceCanvas.height = fullResolutionImageData.height;
+  }
+  sourceCtx.putImageData(fullResolutionImageData, 0, 0);
+}
+
+function restorePreviewSourceCanvas() {
+  if (!sourceCanvas || !sourceCtx || !originalImageData) return;
+  if (sourceCanvas.width !== originalImageData.width) {
+    sourceCanvas.width = originalImageData.width;
+  }
+  if (sourceCanvas.height !== originalImageData.height) {
+    sourceCanvas.height = originalImageData.height;
+  }
+  sourceCtx.putImageData(originalImageData, 0, 0);
+}
+
+function applyVoronoiFocusZoom() {
+  const site = activeVoronoiFocusSite();
+  if (
+    !voronoiFocusZoom ||
+    !site ||
+    !fullResolutionImageData ||
+    !comparisonStage
+  ) {
+    return;
+  }
+
+  const stageRect = comparisonStage.getBoundingClientRect();
+  if (stageRect.width <= 0 || stageRect.height <= 0) return;
+
+  const samplePoint = site.samplePoint;
+  if (!samplePoint) return;
+
+  const displayWidth = fullResolutionImageData.width * voronoiFocusZoom.scale;
+  const displayHeight = fullResolutionImageData.height * voronoiFocusZoom.scale;
+  const centerX = samplePoint.x * displayWidth;
+  const centerY = samplePoint.y * displayHeight;
+  const left = Math.round(stageRect.width / 2 - centerX);
+  const top = Math.round(stageRect.height / 2 - centerY);
+
+  drawFullResolutionSourceCanvas();
+  applyPreviewImagePlacement(left, top, displayWidth, displayHeight);
+  renderQuantizerOverlay();
+}
+
+function setVoronoiFocusZoom(scale: VoronoiFocusZoomScale | null) {
+  if (scale === null) {
+    voronoiFocusZoom = null;
+    clearPreviewImagePlacement();
+    restorePreviewSourceCanvas();
+    renderQuantizerOverlay();
+    syncVoronoiFocusZoomControls();
+    return;
+  }
+
+  const site = findQuantizerSite(activeQuantizerSiteId);
+  if (!site?.samplePoint || !fullResolutionImageData) return;
+  voronoiFocusZoom = { siteId: site.id, scale };
+  applyVoronoiFocusZoom();
+  syncVoronoiFocusZoomControls();
+}
+
+function syncVoronoiFocusZoomControls() {
+  const buttons = quantizerEditor?.querySelectorAll<HTMLButtonElement>(
+    ".zoom-button[data-scale]",
+  );
+  buttons?.forEach((button) => {
+    const active = Number(button.dataset.scale) === voronoiFocusZoom?.scale;
+    button.classList.toggle("active", active);
+    button.setAttribute("aria-pressed", active ? "true" : "false");
+  });
 }
 
 if (comparisonStage && comparisonSlider) {
@@ -1124,6 +1246,9 @@ function setProcessingMode(next: ProcessingMode) {
     renderQuantizerControls();
     return;
   }
+  if (next !== "voronoi") {
+    setVoronoiFocusZoom(null);
+  }
   engineSettingsCache[activeProcessingMode] = captureEngineSettings();
   activeProcessingMode = next;
   const cachedSettings = engineSettingsCache[next];
@@ -1147,6 +1272,9 @@ function setVoronoiEditMode(next: VoronoiEditMode) {
     renderQuantizerControls();
     return;
   }
+  if (next !== "source") {
+    setVoronoiFocusZoom(null);
+  }
   activeVoronoiEditMode = next;
   updateModeLabels();
   updateAllHistograms();
@@ -1169,6 +1297,7 @@ function activeBezierRegion(): BezierRegion | undefined {
 }
 
 function resetQuantizerState() {
+  setVoronoiFocusZoom(null);
   const group = createQuantizationGroup("Index 1", { r: 0, g: 150, b: 255 });
   quantizerGroups = [group];
   activeQuantizerGroupId = group.id;
@@ -1182,6 +1311,7 @@ function resetQuantizerState() {
 }
 
 function addQuantizerGroup() {
+  setVoronoiFocusZoom(null);
   const group = createQuantizationGroup(
     `Index ${quantizerGroups.length + 1}`,
     randomReadableColor(),
@@ -1195,6 +1325,7 @@ function addQuantizerGroup() {
 }
 
 function deleteActiveQuantizerGroup() {
+  setVoronoiFocusZoom(null);
   if (quantizerGroups.length <= 1) {
     const group = quantizerGroups[0];
     group.sites = [];
@@ -1331,6 +1462,9 @@ function updateDraggedImageSite(clientX: number, clientY: number) {
   const sample = samplePreviewAverage(clientX, clientY);
   if (!sample) return;
   updateSiteFromSample(site, sample);
+  if (voronoiFocusZoom?.siteId === site.id) {
+    applyVoronoiFocusZoom();
+  }
 }
 
 type PreviewPixel = { rgb: RGB; x: number; y: number };
@@ -1340,24 +1474,29 @@ type VoronoiSample = {
   samplePoint: { x: number; y: number };
 };
 
+function voronoiSamplingImageData(): ImageData | null {
+  return fullResolutionImageData ?? originalImageData;
+}
+
 function previewPixelFromClient(
   clientX: number,
   clientY: number,
+  imageData: ImageData | null = originalImageData,
 ): { x: number; y: number } | null {
-  if (!originalImageData) return null;
+  if (!imageData) return null;
   const layout = previewImageLayout();
   if (!layout) return null;
   const x = Math.floor(
-    ((clientX - layout.left) / layout.width) * originalImageData.width,
+    ((clientX - layout.left) / layout.width) * imageData.width,
   );
   const y = Math.floor(
-    ((clientY - layout.top) / layout.height) * originalImageData.height,
+    ((clientY - layout.top) / layout.height) * imageData.height,
   );
   if (
     x < 0 ||
     y < 0 ||
-    x >= originalImageData.width ||
-    y >= originalImageData.height
+    x >= imageData.width ||
+    y >= imageData.height
   ) {
     return null;
   }
@@ -1396,12 +1535,15 @@ function samplePreviewPixel(
   clientX: number,
   clientY: number,
 ): PreviewPixel | null {
-  if (!originalImageData) return null;
-  const point = previewPixelFromClient(clientX, clientY);
+  const imageData = voronoiFocusZoom
+    ? (fullResolutionImageData ?? originalImageData)
+    : originalImageData;
+  if (!imageData) return null;
+  const point = previewPixelFromClient(clientX, clientY, imageData);
   if (!point) return null;
   const { x, y } = point;
-  const index = (y * originalImageData.width + x) * 4;
-  const data = originalImageData.data;
+  const index = (y * imageData.width + x) * 4;
+  const data = imageData.data;
   if (data[index + 3] === 0) return null;
   return {
     x,
@@ -1412,9 +1554,10 @@ function samplePreviewPixel(
 
 function samplePreviewAverageAtPixel(
   center: { x: number; y: number },
+  imageData: ImageData | null = voronoiSamplingImageData(),
 ): VoronoiSample | null {
-  if (!originalImageData) return null;
-  const { width, height, data } = originalImageData;
+  if (!imageData) return null;
+  const { width, height, data } = imageData;
   const samplePoint = {
     x: width <= 1 ? 0 : center.x / (width - 1),
     y: height <= 1 ? 0 : center.y / (height - 1),
@@ -1496,23 +1639,44 @@ function samplePreviewAverage(
   clientX: number,
   clientY: number,
 ): VoronoiSample | null {
-  if (!originalImageData) return null;
-  const center = previewPixelFromClient(clientX, clientY);
+  const imageData = voronoiSamplingImageData();
+  if (!imageData) return null;
+  const center = previewPixelFromClient(clientX, clientY, imageData);
   if (!center) return null;
-  return samplePreviewAverageAtPixel(center);
+  return samplePreviewAverageAtPixel(center, imageData);
 }
 
 function samplePreviewAverageAtSamplePoint(
   samplePoint: { x: number; y: number },
 ): VoronoiSample | null {
-  if (!originalImageData) return null;
+  const imageData = voronoiSamplingImageData();
+  if (!imageData) return null;
   const x = Math.round(
-    Math.max(0, Math.min(1, samplePoint.x)) * (originalImageData.width - 1),
+    Math.max(0, Math.min(1, samplePoint.x)) * (imageData.width - 1),
   );
   const y = Math.round(
-    Math.max(0, Math.min(1, samplePoint.y)) * (originalImageData.height - 1),
+    Math.max(0, Math.min(1, samplePoint.y)) * (imageData.height - 1),
   );
-  return samplePreviewAverageAtPixel({ x, y });
+  return samplePreviewAverageAtPixel({ x, y }, imageData);
+}
+
+function nudgeFocusedVoronoiSite(dx: number, dy: number): boolean {
+  if (!voronoiFocusZoom) return false;
+  const site = activeVoronoiFocusSite();
+  const imageData = voronoiSamplingImageData();
+  if (!site?.samplePoint || !imageData) return false;
+
+  const currentX = Math.round(site.samplePoint.x * (imageData.width - 1));
+  const currentY = Math.round(site.samplePoint.y * (imageData.height - 1));
+  const nextX = Math.max(0, Math.min(imageData.width - 1, currentX + dx));
+  const nextY = Math.max(0, Math.min(imageData.height - 1, currentY + dy));
+  if (nextX === currentX && nextY === currentY) return true;
+
+  const sample = samplePreviewAverageAtPixel({ x: nextX, y: nextY }, imageData);
+  if (!sample) return true;
+  updateSiteFromSample(site, sample);
+  applyVoronoiFocusZoom();
+  return true;
 }
 
 function rehydrateVoronoiSitesForActiveColorSpace() {
@@ -1834,11 +1998,16 @@ function renderQuantizerOverlay() {
     return;
   }
 
-  if (quantizerOverlayCanvas.width !== originalImageData.width) {
-    quantizerOverlayCanvas.width = originalImageData.width;
+  const overlayImageData =
+    voronoiFocusZoom && fullResolutionImageData
+      ? fullResolutionImageData
+      : originalImageData;
+
+  if (quantizerOverlayCanvas.width !== overlayImageData.width) {
+    quantizerOverlayCanvas.width = overlayImageData.width;
   }
-  if (quantizerOverlayCanvas.height !== originalImageData.height) {
-    quantizerOverlayCanvas.height = originalImageData.height;
+  if (quantizerOverlayCanvas.height !== overlayImageData.height) {
+    quantizerOverlayCanvas.height = overlayImageData.height;
   }
 
   const ctx = quantizerOverlayCtx;
@@ -1892,6 +2061,7 @@ function renderVoronoiControls() {
   quantizerList.replaceChildren();
 
   quantizerEditor.appendChild(createSampleRadiusRow());
+  quantizerEditor.appendChild(createVoronoiFocusZoomRow());
 
   const group = activeQuantizerGroup();
   if (group) {
@@ -1974,6 +2144,100 @@ function sanitizeVoronoiSampleRadius(value: unknown): number {
   const numeric = Number(value);
   if (!Number.isFinite(numeric)) return 1;
   return Math.max(1, Math.min(10, Math.round(numeric)));
+}
+
+function createVoronoiFocusZoomRow(): HTMLElement {
+  const wrapper = document.createElement("div");
+  wrapper.className = "field-block";
+
+  const label = document.createElement("span");
+  label.textContent = "Focus Zoom";
+
+  const controls = document.createElement("div");
+  controls.className = "button-row voronoi-zoom-controls";
+
+  const activeSite = findQuantizerSite(activeQuantizerSiteId);
+  const enabled =
+    activeProcessingMode === "voronoi" &&
+    activeVoronoiEditMode === "source" &&
+    Boolean(activeSite?.samplePoint) &&
+    Boolean(fullResolutionImageData);
+
+  const createButton = (scale: VoronoiFocusZoomScale) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "zoom-button";
+    button.dataset.scale = scale.toString();
+    button.textContent = `${scale}x`;
+    button.disabled = !enabled;
+    button.title = enabled
+      ? `Focus the image at ${scale}x around the active source site`
+      : "Select or place a source site before focusing the image";
+    button.setAttribute("aria-label", `Focus active Voronoi site at ${scale}x`);
+    button.setAttribute(
+      "aria-pressed",
+      voronoiFocusZoom?.scale === scale ? "true" : "false",
+    );
+    button.classList.toggle("active", voronoiFocusZoom?.scale === scale);
+    let pressStartedAt = 0;
+    let activeBeforePress = false;
+    let zoomBeforePress: typeof voronoiFocusZoom = null;
+    let suppressNextClick = false;
+    let clickShouldDeactivate = false;
+
+    button.addEventListener("pointerdown", (event) => {
+      if (button.disabled || event.button !== 0) return;
+      pressStartedAt = performance.now();
+      zoomBeforePress = voronoiFocusZoom
+        ? { ...voronoiFocusZoom }
+        : null;
+      activeBeforePress = voronoiFocusZoom?.scale === scale;
+      clickShouldDeactivate = activeBeforePress;
+      setVoronoiFocusZoom(scale);
+      button.setPointerCapture(event.pointerId);
+    });
+
+    const finishPress = (event: PointerEvent, canceled = false) => {
+      if (pressStartedAt === 0) return;
+      const heldFor = performance.now() - pressStartedAt;
+      pressStartedAt = 0;
+      if (button.hasPointerCapture(event.pointerId)) {
+        button.releasePointerCapture(event.pointerId);
+      }
+      if (canceled || heldFor >= 240) {
+        suppressNextClick = true;
+        setVoronoiFocusZoom(zoomBeforePress?.scale ?? null);
+      }
+      zoomBeforePress = null;
+    };
+
+    button.addEventListener("pointerup", (event) => finishPress(event));
+    button.addEventListener("pointercancel", (event) =>
+      finishPress(event, true),
+    );
+    button.addEventListener("lostpointercapture", () => {
+      pressStartedAt = 0;
+    });
+
+    button.addEventListener("click", () => {
+      if (suppressNextClick) {
+        suppressNextClick = false;
+        return;
+      }
+      if (voronoiFocusZoom?.scale === scale) {
+        setVoronoiFocusZoom(clickShouldDeactivate ? null : scale);
+      } else {
+        setVoronoiFocusZoom(scale);
+      }
+      clickShouldDeactivate = false;
+    });
+    controls.appendChild(button);
+  };
+
+  createButton(1);
+  createButton(2);
+  wrapper.append(label, controls);
+  return wrapper;
 }
 
 function createSampleRadiusRow(): HTMLElement {
@@ -3680,6 +3944,7 @@ function drawFromSource(
 
   const img = new Image();
   img.onload = () => {
+    setVoronoiFocusZoom(null);
     const fullCanvas = document.createElement("canvas");
     const fullCtx = fullCanvas.getContext("2d");
     if (!fullCtx) return;
@@ -4011,6 +4276,25 @@ attachUnifiedDragHandlers(controlsCanvasBlue, "blue");
 attachUnifiedDragHandlers(controlsCanvasAlpha, "alpha");
 
 document.addEventListener("keydown", (event) => {
+  if (
+    !event.altKey &&
+    !event.ctrlKey &&
+    !event.metaKey &&
+    !isTextEntryTarget(event.target)
+  ) {
+    const arrowNudges: Record<string, { dx: number; dy: number }> = {
+      ArrowLeft: { dx: -1, dy: 0 },
+      ArrowRight: { dx: 1, dy: 0 },
+      ArrowUp: { dx: 0, dy: -1 },
+      ArrowDown: { dx: 0, dy: 1 },
+    };
+    const nudge = arrowNudges[event.key];
+    if (nudge && nudgeFocusedVoronoiSite(nudge.dx, nudge.dy)) {
+      event.preventDefault();
+      return;
+    }
+  }
+
   if (
     event.key.toLowerCase() !== "n" ||
     event.altKey ||
