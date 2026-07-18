@@ -11,7 +11,7 @@ use crate::document::{
 };
 use crate::export::atomic_write_checked;
 
-pub const PRESET_VERSION: u32 = 1;
+pub const PRESET_VERSION: u32 = 2;
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -85,7 +85,11 @@ impl Preset {
 
     pub fn validate(&self) -> Result<()> {
         if self.version != PRESET_VERSION {
-            bail!("unsupported preset version {}", self.version);
+            bail!(
+                "unsupported pre-release preset version {}; this build opens only version {}",
+                self.version,
+                PRESET_VERSION
+            );
         }
         if validate_name(&self.name)? != self.name {
             bail!("preset name cannot have surrounding whitespace");
@@ -323,7 +327,18 @@ fn filename_for_name(name: &str) -> String {
 
 fn read_preset(path: &Path) -> Result<Preset> {
     let bytes = fs::read(path).with_context(|| format!("cannot read {}", path.display()))?;
-    let mut preset: Preset = serde_json::from_slice(&bytes)
+    let value: serde_json::Value = serde_json::from_slice(&bytes)
+        .with_context(|| format!("{} is not a valid preset JSON file", path.display()))?;
+    let version = value
+        .get("version")
+        .and_then(serde_json::Value::as_u64)
+        .ok_or_else(|| anyhow::anyhow!("preset has no numeric version"))? as u32;
+    if version != PRESET_VERSION {
+        bail!(
+            "unsupported pre-release preset version {version}; this build opens only version {PRESET_VERSION}"
+        );
+    }
+    let mut preset: Preset = serde_json::from_value(value)
         .with_context(|| format!("{} is not a valid preset JSON file", path.display()))?;
     detach_sites(&mut preset.processing.voronoi);
     preset.validate()?;

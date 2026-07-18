@@ -1,9 +1,9 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use crate::color::{encoded_to_hsv, hsv_to_encoded};
+use crate::color::{encoded_to_hsv, hsv_to_encoded, linear_to_okhsl_cylinder};
 use crate::document::{
-    ColorComponent, ComponentOperation, ComponentSet, Method, PixelImage, Recipe,
-    ThresholdEncoding, ThresholdSpace, VoronoiMatching,
+    ColorComponent, ComponentOperation, ComponentSet, Method, PixelImage, Recipe, ThresholdSpace,
+    VoronoiMatching,
 };
 use crate::voronoi::{distance2, linear_rgb_to_oklab};
 
@@ -64,7 +64,27 @@ pub fn process_cancellable_with_progress_and_coverage(
     current: &AtomicU64,
     mut progress: impl FnMut(f64),
 ) -> Option<(PixelImage, Coverage)> {
-    let mut pixels = source.pixels.to_vec();
+    let smoothing = recipe.threshold.input_smoothing;
+    let smoothing_rows = usize::from(smoothing > 0.0) * 2;
+    let active_steps = recipe
+        .steps
+        .iter()
+        .filter(|step| !matches!(step.operation, ComponentOperation::ThreeBandQuantize { .. }))
+        .count();
+    let method_rows = 1usize;
+    let total_rows =
+        ((active_steps + method_rows + smoothing_rows).max(1) * source.height as usize) as f64;
+    let mut completed_rows = 0usize;
+    let mut pixels = if smoothing > 0.0 {
+        gaussian_blur_cancellable(source, smoothing, generation, current, |rows| {
+            completed_rows += rows;
+            progress(completed_rows as f64 / total_rows);
+        })?
+        .pixels
+        .to_vec()
+    } else {
+        source.pixels.to_vec()
+    };
     let mut coverage = Coverage {
         site_counts: recipe
             .voronoi
@@ -74,14 +94,6 @@ pub fn process_cancellable_with_progress_and_coverage(
             .collect(),
         visible_total: 0,
     };
-    let active_steps = recipe
-        .steps
-        .iter()
-        .filter(|step| !matches!(step.operation, ComponentOperation::ThreeBandQuantize { .. }))
-        .count();
-    let method_rows = 1usize;
-    let total_rows = ((active_steps + method_rows).max(1) * source.height as usize) as f64;
-    let mut completed_rows = 0usize;
     if recipe.active_method == Method::Voronoi {
         let sites: Vec<_> = recipe
             .voronoi
@@ -95,13 +107,18 @@ pub fn process_cancellable_with_progress_and_coverage(
                 ];
                 let encoded = source_rgb.map(|channel| linear_to_srgb(channel) as f64);
                 let hsv = encoded_to_hsv(encoded);
-                let radians = hsv[0].to_radians();
                 CompiledSite {
                     id: site.id,
                     order: site.order,
                     oklab: linear_rgb_to_oklab(source_rgb),
+                    okhsl_cylinder: if recipe.voronoi.matching == VoronoiMatching::Okhsl {
+                        linear_to_okhsl_cylinder(source_rgb.map(f64::from))
+                            .expect("validated bounded site colors have OKHSL coordinates")
+                    } else {
+                        [0.0; 3]
+                    },
                     encoded,
-                    hsv_cylinder: [hsv[1] * radians.cos(), hsv[1] * radians.sin(), hsv[2]],
+                    hsv_cone: hsv_cone_point(hsv),
                     influence: site.influence,
                     target: site.target_color,
                 }
@@ -202,6 +219,77 @@ pub fn process_cancellable_with_progress_and_coverage(
     ))
 }
 
+pub fn gaussian_blur_cancellable(
+    source: &PixelImage,
+    amount: f32,
+    generation: u64,
+    current: &AtomicU64,
+    mut rows_done: impl FnMut(usize),
+) -> Option<PixelImage> {
+    if amount <= 0.0 {
+        return Some(source.clone());
+    }
+    let sigma = amount.max(0.5);
+    let radius = (3.0 * sigma).ceil() as i32;
+    let mut weights = (-radius..=radius)
+        .map(|offset| (-(offset * offset) as f32 / (2.0 * sigma * sigma)).exp())
+        .collect::<Vec<_>>();
+    let sum: f32 = weights.iter().sum();
+    for weight in &mut weights {
+        *weight /= sum;
+    }
+    let width = source.width as usize;
+    let height = source.height as usize;
+    let mut horizontal = vec![[0.0; 4]; source.pixels.len()];
+    for y in 0..height {
+        if y % 4 == 0 && current.load(Ordering::Acquire) != generation {
+            return None;
+        }
+        for x in 0..width {
+            let mut premul = [0.0; 4];
+            for (kernel, offset) in weights.iter().zip(-radius..=radius) {
+                let sx = (x as i32 + offset).clamp(0, width as i32 - 1) as usize;
+                let pixel = source.pixels[y * width + sx];
+                premul[0] += pixel[0] * pixel[3] * kernel;
+                premul[1] += pixel[1] * pixel[3] * kernel;
+                premul[2] += pixel[2] * pixel[3] * kernel;
+                premul[3] += pixel[3] * kernel;
+            }
+            horizontal[y * width + x] = premul;
+        }
+        rows_done(1);
+    }
+    let mut output = vec![[0.0; 4]; source.pixels.len()];
+    for y in 0..height {
+        if y % 4 == 0 && current.load(Ordering::Acquire) != generation {
+            return None;
+        }
+        for x in 0..width {
+            let mut premul = [0.0; 4];
+            for (kernel, offset) in weights.iter().zip(-radius..=radius) {
+                let sy = (y as i32 + offset).clamp(0, height as i32 - 1) as usize;
+                let pixel = horizontal[sy * width + x];
+                for channel in 0..4 {
+                    premul[channel] += pixel[channel] * kernel;
+                }
+            }
+            let alpha = premul[3].clamp(0.0, 1.0);
+            output[y * width + x] = if alpha > 1.0e-8 {
+                [
+                    premul[0] / alpha,
+                    premul[1] / alpha,
+                    premul[2] / alpha,
+                    alpha,
+                ]
+            } else {
+                [0.0, 0.0, 0.0, 0.0]
+            };
+        }
+        rows_done(1);
+    }
+    PixelImage::new(source.width, source.height, output).ok()
+}
+
 fn apply_threshold(pixel: &mut [f32; 4], recipe: &Recipe) {
     if pixel[3] == 0.0 {
         pixel[..3].fill(0.0);
@@ -210,27 +298,18 @@ fn apply_threshold(pixel: &mut [f32; 4], recipe: &Recipe) {
     let threshold = &recipe.threshold;
     match threshold.active_space {
         ThresholdSpace::Rgb => {
-            let legacy = threshold.rgb_state.encoding == ThresholdEncoding::LinearSrgbLegacy;
-            let mut components = if legacy {
-                [pixel[0], pixel[1], pixel[2]]
-            } else {
-                [
-                    linear_to_srgb(pixel[0]),
-                    linear_to_srgb(pixel[1]),
-                    linear_to_srgb(pixel[2]),
-                ]
-            };
+            let mut components = [
+                linear_to_srgb(pixel[0]),
+                linear_to_srgb(pixel[1]),
+                linear_to_srgb(pixel[2]),
+            ];
             for (value, quantizer) in components.iter_mut().zip(&threshold.rgb_state.components) {
                 if quantizer.enabled {
                     *value = quantizer.quantize(*value);
                 }
             }
-            if legacy {
-                pixel[..3].copy_from_slice(&components);
-            } else {
-                for index in 0..3 {
-                    pixel[index] = srgb_to_linear(components[index]);
-                }
+            for index in 0..3 {
+                pixel[index] = srgb_to_linear(components[index]);
             }
         }
         ThresholdSpace::Hsv => {
@@ -273,8 +352,9 @@ struct CompiledSite {
     id: u64,
     order: u64,
     oklab: [f64; 3],
+    okhsl_cylinder: [f64; 3],
     encoded: [f64; 3],
-    hsv_cylinder: [f64; 3],
+    hsv_cone: [f64; 3],
     influence: f64,
     target: [f32; 3],
 }
@@ -284,21 +364,40 @@ fn nearest_site(
     sites: &[CompiledSite],
     matching: VoronoiMatching,
 ) -> Option<&CompiledSite> {
-    let lab = linear_rgb_to_oklab([pixel[0], pixel[1], pixel[2]]);
-    let encoded = [
-        linear_to_srgb(pixel[0]) as f64,
-        linear_to_srgb(pixel[1]) as f64,
-        linear_to_srgb(pixel[2]) as f64,
-    ];
-    let hsv = encoded_to_hsv(encoded);
-    let radians = hsv[0].to_radians();
-    let hsv_cylinder = [hsv[1] * radians.cos(), hsv[1] * radians.sin(), hsv[2]];
+    let coordinates = match matching {
+        VoronoiMatching::Perceptual => linear_rgb_to_oklab([pixel[0], pixel[1], pixel[2]]),
+        VoronoiMatching::Okhsl => {
+            linear_to_okhsl_cylinder([pixel[0] as f64, pixel[1] as f64, pixel[2] as f64])
+                .expect("bounded processing pixels have OKHSL coordinates")
+        }
+        VoronoiMatching::Rgb => [
+            linear_to_srgb(pixel[0]) as f64,
+            linear_to_srgb(pixel[1]) as f64,
+            linear_to_srgb(pixel[2]) as f64,
+        ],
+        VoronoiMatching::Hsv => {
+            let encoded = [
+                linear_to_srgb(pixel[0]) as f64,
+                linear_to_srgb(pixel[1]) as f64,
+                linear_to_srgb(pixel[2]) as f64,
+            ];
+            let hsv = encoded_to_hsv(encoded);
+            hsv_cone_point(hsv)
+        }
+    };
     sites.iter().min_by(|a, b| {
-        let metric = |site: &CompiledSite| match matching {
-            VoronoiMatching::Perceptual => distance2(lab, site.oklab),
-            VoronoiMatching::Rgb => distance2(encoded, site.encoded),
-            VoronoiMatching::Hsv => distance2(hsv_cylinder, site.hsv_cylinder),
+        let metric = |site: &CompiledSite| {
+            let site_coordinates = match matching {
+                VoronoiMatching::Perceptual => site.oklab,
+                VoronoiMatching::Okhsl => site.okhsl_cylinder,
+                VoronoiMatching::Rgb => site.encoded,
+                VoronoiMatching::Hsv => site.hsv_cone,
+            };
+            distance2(coordinates, site_coordinates)
         };
+        // Influence is dimensionless and scales the complete native metric, never individual
+        // axes. Each +1 halves weighted distance², expanding that site's radial reach by sqrt(2);
+        // the -4..=4 UI range therefore spans radius factors 1/4..=4 around neutral.
         let da = metric(a) * 2.0_f64.powf(-a.influence.clamp(-4.0, 4.0));
         let db = metric(b) * 2.0_f64.powf(-b.influence.clamp(-4.0, 4.0));
         let scale = da.abs().max(db.abs()).max(1.0);
@@ -308,6 +407,12 @@ fn nearest_site(
             da.total_cmp(&db)
         }
     })
+}
+
+fn hsv_cone_point(hsv: [f64; 3]) -> [f64; 3] {
+    let radians = hsv[0].to_radians();
+    let radius = hsv[1] * hsv[2];
+    [radius * radians.cos(), radius * radians.sin(), hsv[2]]
 }
 
 /// Create a bounded linear-f32 preview. Full-resolution authoritative pixels remain untouched.

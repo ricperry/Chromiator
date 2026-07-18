@@ -93,22 +93,35 @@ pub fn reattach_site(
     state.set_source(site_id, color, Some(position))
 }
 
-pub fn auto_initialize(proxy: &PixelImage, source: &PixelImage) -> VoronoiState {
-    let mut colors = BTreeMap::<(u32, u32, u32), (usize, [f32; 3], f64)>::new();
-    for (index, pixel) in proxy.pixels.iter().enumerate() {
+pub fn auto_initialize(_proxy: &PixelImage, source: &PixelImage) -> VoronoiState {
+    // Build a bounded histogram from every full-resolution source pixel. The old implementation
+    // counted a nearest-neighbor preview, which could entirely miss one phase of a checkerboard
+    // or alternating scanline. Five bits per canonical linear-sRGB channel bounds the candidate
+    // set at 32,768 bins without inventing colors or changing the native OKLab distance metric.
+    let mut colors = BTreeMap::<u16, (usize, [f64; 3], f64)>::new();
+    for (index, pixel) in source.pixels.iter().enumerate() {
         if pixel[3] <= 0.0 {
             continue;
         }
-        let key = (pixel[0].to_bits(), pixel[1].to_bits(), pixel[2].to_bits());
-        let entry = colors
-            .entry(key)
-            .or_insert((index, [pixel[0], pixel[1], pixel[2]], 0.0));
+        let quantize = |channel: f32| (channel.clamp(0.0, 1.0) * 31.0).round() as u16;
+        let key = (quantize(pixel[0]) << 10) | (quantize(pixel[1]) << 5) | quantize(pixel[2]);
+        let lab = linear_rgb_to_oklab([pixel[0], pixel[1], pixel[2]]);
+        let alpha = pixel[3] as f64;
+        let entry = colors.entry(key).or_insert((index, [0.0; 3], 0.0));
         entry.0 = entry.0.min(index);
-        entry.2 += pixel[3] as f64;
+        for (sum, value) in entry.1.iter_mut().zip(lab) {
+            *sum += value * alpha;
+        }
+        entry.2 += alpha;
     }
     let candidates: Vec<_> = colors
         .into_values()
-        .map(|(index, rgb, alpha)| (index, linear_rgb_to_oklab(rgb), alpha))
+        .map(|(index, mut lab_sum, alpha)| {
+            for component in &mut lab_sum {
+                *component /= alpha;
+            }
+            (index, lab_sum, alpha)
+        })
         .collect();
     let mut state = VoronoiState::default();
     if candidates.is_empty() {
@@ -214,41 +227,52 @@ pub fn auto_initialize(proxy: &PixelImage, source: &PixelImage) -> VoronoiState 
         {
             continue;
         }
-        let Some((index, _)) = proxy
-            .pixels
+        let Some((index, pixel)) = candidates
             .iter()
-            .enumerate()
-            .filter(|(_, pixel)| pixel[3] > 0.0)
+            .map(|(index, _, _)| (*index, &source.pixels[*index]))
             .min_by(|(index_a, a), (index_b, b)| {
                 let da = distance2(linear_rgb_to_oklab([a[0], a[1], a[2]]), center);
                 let db = distance2(linear_rgb_to_oklab([b[0], b[1], b[2]]), center);
                 da.total_cmp(&db)
                     .then_with(|| {
-                        local_same_color_support(proxy, *index_b)
-                            .total_cmp(&local_same_color_support(proxy, *index_a))
+                        local_same_color_support(source, *index_b)
+                            .total_cmp(&local_same_color_support(source, *index_a))
                     })
                     .then_with(|| index_a.cmp(index_b))
             })
         else {
             continue;
         };
-        let x = index % proxy.width as usize;
-        let y = index / proxy.width as usize;
+        let x = index % source.width as usize;
+        let y = index / source.width as usize;
         let position = [
-            if proxy.width > 1 {
-                x as f64 / (proxy.width - 1) as f64
+            if source.width > 1 {
+                x as f64 / (source.width - 1) as f64
             } else {
                 0.0
             },
-            if proxy.height > 1 {
-                y as f64 / (proxy.height - 1) as f64
+            if source.height > 1 {
+                y as f64 / (source.height - 1) as f64
             } else {
                 0.0
             },
         ];
-        if add_site_at(&mut state, source, position).is_some() {
-            accepted.push(center);
-        }
+        let site_id = state.next_site_id;
+        state.next_site_id += 1;
+        state.sites.push(VoronoiSite {
+            id: site_id,
+            order: site_id,
+            source_color: *pixel,
+            target_color: [pixel[0], pixel[1], pixel[2]],
+            influence: 0.0,
+            locked: false,
+            position: Some(position),
+            // Automatic sites represent colors actually observed in the distribution. A point
+            // sample prevents a high-frequency representative from becoming a synthetic local
+            // average immediately after selection.
+            size: SampleSize::Point,
+        });
+        accepted.push(center);
     }
     state
 }

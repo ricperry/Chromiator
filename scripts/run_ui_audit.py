@@ -22,8 +22,16 @@ SCENARIOS = (
     "picker",
     "io-workflow",
     "narrow-core",
+    "adaptive-1024",
+    "responsive-thresholds-720",
+    "responsive-voronoi-720",
+    "responsive-thresholds-1024",
+    "responsive-voronoi-1024",
 )
-TOTAL_TIMEOUT = 12.0
+# The expanded Threshold dialog scenario now exercises more than 200 real signal
+# events. GTK process shutdown consistently adds roughly six seconds after the
+# completion marker, so retain a hard bound with enough margin for that teardown.
+TOTAL_TIMEOUT = 16.0
 STALE_TIMEOUT = 3.0
 FATAL_DIAGNOSTICS = (
     "panicked at",
@@ -111,6 +119,12 @@ def main() -> int:
         ]
         if scenario == "narrow-core":
             command += ["--window-size", "720x700"]
+        elif scenario == "adaptive-1024":
+            command += ["--window-size", "1024x600"]
+        elif scenario.startswith("responsive-"):
+            method = "thresholds" if "thresholds" in scenario else "voronoi"
+            size = "720x700" if scenario.endswith("-720") else "1024x600"
+            command += ["--method", method, "--window-size", size]
         env = os.environ.copy()
         env.setdefault("GSK_RENDERER", "cairo")
         xdg_data = OUT / "xdg" / scenario

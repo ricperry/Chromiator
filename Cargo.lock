@@ -1092,6 +1092,7 @@ dependencies = [
  "gtk4",
  "image",
  "libadwaita",
+ "moxcms",
  "png",
  "serde",
  "serde_json",

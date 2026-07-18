@@ -4,6 +4,7 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result, bail};
 use image::{AnimationDecoder, DynamicImage, ImageDecoder, ImageFormat, ImageReader};
+use moxcms::{ColorProfile, DataColorSpace, Layout, RenderingIntent, TransformOptions};
 
 use crate::document::{PixelImage, ProfileInterpretation, SourceInterpretation};
 use crate::processing::srgb_to_linear;
@@ -44,19 +45,27 @@ pub fn decode(bytes: &[u8], _path_hint: Option<&Path>) -> Result<DecodedRaster> 
     let mut reader = ImageReader::new(Cursor::new(bytes));
     reader.set_format(format);
     let mut decoder = reader.into_decoder()?;
-    let has_profile = decoder.icc_profile()?.is_some();
+    let embedded_profile = decoder.icc_profile()?;
     let image = DynamicImage::from_decoder(decoder)?;
     let width = image.width();
     let height = image.height();
     let layout = format!("{:?} expanded to straight RGBA", image.color());
     let rgba = image.into_rgba32f();
+    let mut encoded_rgb: Vec<f32> = rgba
+        .pixels()
+        .flat_map(|pixel| pixel.0[..3].iter().copied())
+        .collect();
+    if let Some(profile_bytes) = embedded_profile.as_deref() {
+        convert_embedded_rgb_to_srgb(&mut encoded_rgb, profile_bytes)?;
+    }
     let pixels = rgba
         .pixels()
-        .map(|p| {
+        .zip(encoded_rgb.chunks_exact(3))
+        .map(|(p, rgb)| {
             [
-                srgb_to_linear(p.0[0].clamp(0.0, 1.0)),
-                srgb_to_linear(p.0[1].clamp(0.0, 1.0)),
-                srgb_to_linear(p.0[2].clamp(0.0, 1.0)),
+                srgb_to_linear(rgb[0].clamp(0.0, 1.0)),
+                srgb_to_linear(rgb[1].clamp(0.0, 1.0)),
+                srgb_to_linear(rgb[2].clamp(0.0, 1.0)),
                 p.0[3].clamp(0.0, 1.0),
             ]
         })
@@ -71,8 +80,8 @@ pub fn decode(bytes: &[u8], _path_hint: Option<&Path>) -> Result<DecodedRaster> 
                 .copied()
                 .unwrap_or("raster")
                 .to_uppercase(),
-            profile: if has_profile {
-                ProfileInterpretation::EmbeddedProfileNotConverted
+            profile: if embedded_profile.is_some() {
+                ProfileInterpretation::EmbeddedProfileConvertedToSrgb
             } else {
                 ProfileInterpretation::UntaggedAssumedSrgb
             },
@@ -84,6 +93,34 @@ pub fn decode(bytes: &[u8], _path_hint: Option<&Path>) -> Result<DecodedRaster> 
             },
         },
     })
+}
+
+/// Convert encoded RGB samples from an embedded ICC profile into the app's canonical encoded
+/// sRGB working space. Perceptual Voronoi code receives linear sRGB later and never interprets
+/// picker coordinates or profile-native channel values as OKLab.
+fn convert_embedded_rgb_to_srgb(encoded_rgb: &mut [f32], profile_bytes: &[u8]) -> Result<()> {
+    let source = ColorProfile::new_from_slice(profile_bytes)
+        .context("embedded ICC profile could not be parsed")?;
+    if source.color_space != DataColorSpace::Rgb {
+        bail!(
+            "embedded ICC profile uses unsupported {:?} source channels; provide an RGB raster",
+            source.color_space
+        );
+    }
+    let destination = ColorProfile::new_srgb();
+    let options = TransformOptions {
+        rendering_intent: RenderingIntent::RelativeColorimetric,
+        // Keep the f32 path as precise as the profile permits; the decoded raster can be 16-bit.
+        prefer_fixed_point: false,
+        ..TransformOptions::default()
+    };
+    let transform = source
+        .create_transform_f32(Layout::Rgb, &destination, Layout::Rgb, options)
+        .context("embedded ICC profile cannot be transformed to sRGB")?;
+    let input = encoded_rgb.to_vec();
+    transform
+        .transform(&input, encoded_rgb)
+        .context("embedded ICC conversion to sRGB failed")
 }
 
 fn is_svg_text_prefix(bytes: &[u8]) -> bool {

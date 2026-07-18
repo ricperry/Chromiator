@@ -2,36 +2,289 @@ use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::AtomicU64;
 use std::time::{Duration, Instant};
 
 use image::{ImageBuffer, ImageFormat, Rgba};
 use threshiator::color::{
-    ColorModel, DraftColor, PickerTransaction, PlaneKey, adjust_oklab_plane, encoded_to_hsl,
-    encoded_to_hsv, hsl_to_encoded, hsv_to_encoded, in_srgb_gamut, linear_to_oklab,
-    max_oklab_chroma, oklab_plane, oklab_plane_coords, oklab_plane_projected, oklab_to_linear,
-    parse_hex,
+    ColorModel, DraftColor, PickerTransaction, PlaneKey, adjust_okhsl, encoded_to_hsl,
+    encoded_to_hsv, encoded_to_linear, hsl_to_encoded, hsv_to_encoded, in_srgb_gamut,
+    linear_to_encoded, linear_to_okhsl, linear_to_okhsl_cylinder, linear_to_oklab, okhsl_to_linear,
+    oklab_to_linear, parse_hex,
 };
 use threshiator::document::{
-    ComponentQuantizer, Document, ExportDefaults, LinkPolicy, Method, Recipe, SampleSize,
-    ThresholdEditGesture, ThresholdEditTarget, ThresholdEditTransaction, ThresholdEncoding,
-    ThresholdSpace, VoronoiMatching, VoronoiSite, VoronoiState, clamp_threshold_boundary,
-    threshold_display_value, threshold_normalized_value,
+    ComponentQuantizer, Document, ExportDefaults, LinkPolicy, Method, ProfileInterpretation,
+    Recipe, SampleSize, ThresholdEditGesture, ThresholdEditTarget, ThresholdEditTransaction,
+    ThresholdEncoding, ThresholdSpace, ThresholdState, VoronoiMatching, VoronoiSite, VoronoiState,
+    clamp_threshold_boundary, threshold_display_value, threshold_normalized_value,
 };
 use threshiator::export::{self, ExportFormat};
+use threshiator::histogram::{
+    HsvHistogramComponent, THRESHOLD_HISTOGRAM_BINS, ThresholdHistograms, hsv_input_strip_color,
+    hsv_output_strip_color, relative_hue_histogram, threshold_histogram_series_mask,
+};
 use threshiator::preset::{Preset, PresetStore, apply_to_document, validate_name};
 use threshiator::processing::{
-    PREVIEW_MAX_DIMENSION, bounded_preview, process,
+    PREVIEW_MAX_DIMENSION, bounded_preview, gaussian_blur_cancellable, process,
     process_cancellable_with_progress_and_coverage, rotate_oklch, srgb_to_linear, to_display_rgba8,
 };
 use threshiator::project;
 use threshiator::raster;
 use threshiator::scheduler::{JobCoordinator, LatestGeneration, PreviewScheduler, ProgressTracker};
+use threshiator::starter_looks::{
+    STARTER_LOOKS, apply_starter_look, recipe_for_starter_look, reset_active_space,
+    reset_component, reset_method, rgb_state,
+};
 use threshiator::voronoi::{auto_initialize, linear_rgb_to_oklab, reattach_site, sample_color};
 use threshiator::workflow::{
     OpenKind, ReplacementDecision, SaveResolution, classify_open_path, ensure_project_extension,
     replacement_decision, resolve_pending_after_save,
 };
 use zip::write::SimpleFileOptions;
+
+#[test]
+fn starter_looks_recreate_exact_archived_normalized_rgb_fixtures() {
+    let expected = [
+        (true, vec![vec![0, 128, 255]; 3]),
+        (false, vec![vec![0, 0], vec![0, 0], vec![0, 255]]),
+        (
+            false,
+            vec![
+                vec![112, 176, 240, 255],
+                vec![80, 144, 208, 224],
+                vec![48, 112, 176, 192],
+            ],
+        ),
+        (true, vec![vec![0, 85, 170, 255]; 3]),
+        (false, vec![vec![255, 0], vec![0, 255], vec![0, 255]]),
+    ];
+    let boundaries = [
+        vec![85, 170],
+        vec![128],
+        vec![64, 128, 192],
+        vec![64, 128, 192],
+        vec![128],
+    ];
+    assert!(STARTER_LOOKS.len() >= 13);
+    for (index, look) in STARTER_LOOKS[..5].iter().copied().enumerate() {
+        let state = rgb_state(look);
+        assert_eq!(state.encoding, ThresholdEncoding::EncodedSrgb);
+        assert_eq!(state.link == LinkPolicy::Linked, expected[index].0);
+        for (channel, component) in state.components.iter().enumerate() {
+            assert_eq!(
+                component.boundaries,
+                boundaries[index]
+                    .iter()
+                    .map(|value| *value as f32 / 255.0)
+                    .collect::<Vec<_>>()
+            );
+            assert_eq!(
+                component.outputs,
+                expected[index].1[channel]
+                    .iter()
+                    .map(|value| *value as f32 / 255.0)
+                    .collect::<Vec<_>>()
+            );
+        }
+    }
+}
+
+#[test]
+fn built_in_presets_have_stable_unique_ids_valid_recipes_and_useful_output() {
+    let mut ids = std::collections::BTreeSet::new();
+    let mut names = std::collections::BTreeSet::new();
+    let document = threshiator::example::spectrum_document().unwrap();
+    let mut threshold_count = 0;
+    let mut voronoi_count = 0;
+    for look in STARTER_LOOKS.iter().copied() {
+        assert!(ids.insert(look.id), "duplicate built-in id {}", look.id);
+        assert!(
+            names.insert(look.name),
+            "duplicate built-in name {}",
+            look.name
+        );
+        let recipe = recipe_for_starter_look(look);
+        recipe.threshold.validate().unwrap();
+        recipe.voronoi.validate().unwrap();
+        let preset = Preset::new(look.name, Some(look.description.into()), &recipe).unwrap();
+        let preset_json = serde_json::to_vec(&preset).unwrap();
+        let reopened: Preset = serde_json::from_slice(&preset_json).unwrap();
+        reopened.validate().unwrap();
+        assert_eq!(reopened.recipe(), recipe);
+        let output = process(&document.source, &recipe);
+        let unique = output
+            .pixels
+            .iter()
+            .map(|pixel| pixel.map(f32::to_bits))
+            .collect::<std::collections::BTreeSet<_>>();
+        assert!(unique.len() >= 2, "{} collapsed to one output", look.name);
+        match look.method {
+            Method::Thresholds => threshold_count += 1,
+            Method::Voronoi => {
+                voronoi_count += 1;
+                assert!(recipe.voronoi.sites.len() >= 4);
+                assert!(
+                    recipe
+                        .voronoi
+                        .sites
+                        .iter()
+                        .all(|site| site.position.is_none())
+                );
+            }
+        }
+    }
+    assert!(threshold_count >= 8);
+    assert!(voronoi_count >= 5);
+}
+
+#[test]
+fn starter_apply_is_scoped_dirty_and_idempotent() {
+    let mut document = threshiator::example::spectrum_document().unwrap();
+    let identity = (
+        document.source_name.clone(),
+        document.source_bytes.clone(),
+        document.source.clone(),
+        document.interpretation.clone(),
+        document.export_defaults.clone(),
+        document.recipe.voronoi.clone(),
+        document.recipe.steps.clone(),
+    );
+    document.recipe.threshold.hsv_state.hue = ComponentQuantizer::evenly_spaced(9);
+    document.recipe.threshold.input_smoothing = 4.0;
+    assert!(apply_starter_look(&mut document, 2));
+    assert_eq!(document.recipe.threshold.input_smoothing, 0.0);
+    assert!(document.dirty);
+    assert_eq!(document.recipe.active_method, Method::Thresholds);
+    assert_eq!(document.recipe.threshold.active_space, ThresholdSpace::Rgb);
+    assert_eq!(
+        document.recipe.threshold.hsv_state,
+        Recipe::default().threshold.hsv_state
+    );
+    assert_eq!(
+        (
+            document.source_name.clone(),
+            document.source_bytes.clone(),
+            document.source.clone(),
+            document.interpretation.clone(),
+            document.export_defaults.clone(),
+            document.recipe.voronoi.clone(),
+            document.recipe.steps.clone(),
+        ),
+        identity
+    );
+    assert!(!apply_starter_look(&mut document, 2));
+    assert!(!apply_starter_look(&mut document, usize::MAX));
+}
+
+#[test]
+fn gaussian_smoothing_zero_constant_impulse_alpha_and_cancellation() {
+    let generation = AtomicU64::new(1);
+    let source =
+        threshiator::document::PixelImage::new(5, 5, vec![[0.2, 0.4, 0.6, 1.0]; 25]).unwrap();
+    assert!(
+        gaussian_blur_cancellable(&source, 0.0, 1, &generation, |_| {})
+            .unwrap()
+            .shares_storage_with(&source)
+    );
+    let constant = gaussian_blur_cancellable(&source, 2.0, 1, &generation, |_| {}).unwrap();
+    for pixel in constant.pixels.iter() {
+        for (actual, expected) in pixel.iter().zip(source.pixels[0]) {
+            assert!((*actual - expected).abs() < 1.0e-5);
+        }
+    }
+    let mut impulse = vec![[0.0, 0.0, 0.0, 0.0]; 25];
+    impulse[12] = [1.0, 0.0, 0.0, 1.0];
+    let impulse = threshiator::document::PixelImage::new(5, 5, impulse).unwrap();
+    let blurred = gaussian_blur_cancellable(&impulse, 1.0, 1, &generation, |_| {}).unwrap();
+    assert!((blurred.pixels[11][3] - blurred.pixels[13][3]).abs() < 1.0e-6);
+    assert!((blurred.pixels[7][3] - blurred.pixels[17][3]).abs() < 1.0e-6);
+    for pixel in blurred.pixels.iter().filter(|pixel| pixel[3] > 1.0e-8) {
+        assert!((pixel[0] - 1.0).abs() < 1.0e-5);
+        assert_eq!(pixel[1], 0.0);
+        assert_eq!(pixel[2], 0.0);
+    }
+    let transparent =
+        threshiator::document::PixelImage::new(1, 1, vec![[1.0, 1.0, 1.0, 0.0]]).unwrap();
+    assert_eq!(
+        gaussian_blur_cancellable(&transparent, 1.0, 1, &generation, |_| {})
+            .unwrap()
+            .pixels[0],
+        [0.0; 4]
+    );
+    generation.store(2, std::sync::atomic::Ordering::Release);
+    assert!(gaussian_blur_cancellable(&source, 1.0, 1, &generation, |_| {}).is_none());
+}
+
+#[test]
+fn smoothing_affects_both_methods_and_validates_range() {
+    let source = threshiator::document::PixelImage::new(
+        3,
+        1,
+        vec![
+            [0.0, 0.0, 0.0, 1.0],
+            [1.0, 1.0, 1.0, 1.0],
+            [0.0, 0.0, 0.0, 1.0],
+        ],
+    )
+    .unwrap();
+    for method in [Method::Thresholds, Method::Voronoi] {
+        let mut recipe = Recipe {
+            active_method: method,
+            ..Recipe::default()
+        };
+        recipe.threshold.input_smoothing = 2.0;
+        let smoothed = process(&source, &recipe);
+        recipe.threshold.input_smoothing = 0.0;
+        assert_ne!(smoothed, process(&source, &recipe));
+    }
+    let mut threshold = Recipe::default().threshold;
+    threshold.input_smoothing = 11.0;
+    assert!(threshold.validate().is_err());
+}
+
+#[test]
+fn threshold_resets_obey_component_space_method_and_link_scope() {
+    let mut threshold = Recipe::default().threshold;
+    threshold.rgb_state.link = LinkPolicy::Independent;
+    threshold.rgb_state.components[0] = ComponentQuantizer::evenly_spaced(8);
+    threshold.rgb_state.components[1] = ComponentQuantizer::evenly_spaced(7);
+    threshold.rgb_state.components[2] = ComponentQuantizer::evenly_spaced(6);
+    threshold.rgb_state.components[1].enabled = false;
+    let blue = threshold.rgb_state.components[2].clone();
+    assert!(reset_component(&mut threshold, ThresholdEditTarget::Green));
+    assert_eq!(threshold.rgb_state.components[0].outputs.len(), 8);
+    assert_eq!(threshold.rgb_state.components[1].outputs.len(), 3);
+    assert!(!threshold.rgb_state.components[1].enabled);
+    assert_eq!(threshold.rgb_state.components[2], blue);
+
+    threshold.rgb_state.link = LinkPolicy::Linked;
+    threshold.rgb_state.components[0] = ComponentQuantizer::evenly_spaced(9);
+    threshold.rgb_state.components[1] = ComponentQuantizer::evenly_spaced(9);
+    threshold.rgb_state.components[2] = ComponentQuantizer::evenly_spaced(9);
+    threshold.rgb_state.components[2].enabled = false;
+    assert!(reset_component(&mut threshold, ThresholdEditTarget::Red));
+    assert!(
+        threshold
+            .rgb_state
+            .components
+            .iter()
+            .all(|component| component.outputs.len() == 3)
+    );
+    assert!(!threshold.rgb_state.components[2].enabled);
+
+    threshold.active_space = ThresholdSpace::Hsv;
+    threshold.hsv_state.hue = ComponentQuantizer::evenly_spaced(10);
+    let rgb_before = threshold.rgb_state.clone();
+    assert!(reset_active_space(&mut threshold));
+    assert_eq!(threshold.rgb_state, rgb_before);
+    assert_eq!(threshold.hsv_state, Recipe::default().threshold.hsv_state);
+    assert!(!reset_active_space(&mut threshold));
+
+    threshold.rgb_state.components[0] = ComponentQuantizer::evenly_spaced(11);
+    assert!(reset_method(&mut threshold));
+    assert_eq!(threshold, Recipe::default().threshold);
+    assert!(!reset_method(&mut threshold));
+}
 
 fn tiny_source() -> (Vec<u8>, raster::DecodedRaster) {
     let image = ImageBuffer::from_pixel(2, 1, Rgba([64_u8, 128, 192, 127]));
@@ -40,6 +293,19 @@ fn tiny_source() -> (Vec<u8>, raster::DecodedRaster) {
     let bytes = bytes.into_inner();
     let decoded = raster::decode(&bytes, None).unwrap();
     (bytes, decoded)
+}
+
+fn png_with_icc(rgb: [u8; 3], profile: &moxcms::ColorProfile) -> Vec<u8> {
+    let mut bytes = Vec::new();
+    let mut info = png::Info::with_size(1, 1);
+    info.color_type = png::ColorType::Rgb;
+    info.bit_depth = png::BitDepth::Eight;
+    info.icc_profile = Some(std::borrow::Cow::Owned(profile.encode().unwrap()));
+    let encoder = png::Encoder::with_info(&mut bytes, info).unwrap();
+    let mut writer = encoder.write_header().unwrap();
+    writer.write_image_data(&rgb).unwrap();
+    writer.finish().unwrap();
+    bytes
 }
 
 fn preset_recipe() -> Recipe {
@@ -257,6 +523,7 @@ fn preset_roundtrips_threshold_voronoi_metrics_locks_and_steps() {
     let mut expected = Vec::new();
     for matching in [
         VoronoiMatching::Perceptual,
+        VoronoiMatching::Okhsl,
         VoronoiMatching::Rgb,
         VoronoiMatching::Hsv,
     ] {
@@ -268,7 +535,7 @@ fn preset_roundtrips_threshold_voronoi_metrics_locks_and_steps() {
         store.save(&preset, false).unwrap();
     }
     let scan = store.scan().unwrap();
-    assert_eq!(scan.entries.len(), 3);
+    assert_eq!(scan.entries.len(), 4);
     assert!(
         scan.entries
             .iter()
@@ -284,6 +551,53 @@ fn preset_roundtrips_threshold_voronoi_metrics_locks_and_steps() {
             preset
         );
     }
+}
+
+#[test]
+fn preset_v1_is_rejected_without_rewriting_and_v2_roundtrips_locks() {
+    let root = tempfile::tempdir().unwrap();
+    let store = PresetStore::at(root.path());
+    let mut legacy =
+        serde_json::to_value(Preset::new("Legacy", None, &preset_recipe()).unwrap()).unwrap();
+    legacy["version"] = serde_json::json!(1);
+    legacy["processing"]["threshold"]["rgb_state"]
+        .as_object_mut()
+        .unwrap()
+        .remove("locks");
+    legacy["processing"]["threshold"]["hsv_state"]
+        .as_object_mut()
+        .unwrap()
+        .remove("locks");
+    let legacy_path = root.path().join("legacy.json");
+    let legacy_bytes = serde_json::to_vec_pretty(&legacy).unwrap();
+    fs::write(&legacy_path, &legacy_bytes).unwrap();
+    let scan = store.scan().unwrap();
+    assert!(scan.entries.is_empty());
+    assert_eq!(scan.diagnostics.len(), 1);
+    assert!(scan.diagnostics[0].reason.contains("only version 2"));
+    assert_eq!(fs::read(&legacy_path).unwrap(), legacy_bytes);
+
+    let mut recipe = preset_recipe();
+    recipe.threshold.rgb_state.locks = [true, false, true];
+    recipe.threshold.hsv_state.locks = [false, true, false];
+    let current = Preset::new("Current", None, &recipe).unwrap();
+    assert_eq!(current.version, 2);
+    store.save(&current, false).unwrap();
+    let scan = store.scan().unwrap();
+    let reopened = &scan
+        .entries
+        .iter()
+        .find(|entry| entry.preset.name == "Current")
+        .unwrap()
+        .preset;
+    assert_eq!(
+        reopened.processing.threshold.rgb_state.locks,
+        [true, false, true]
+    );
+    assert_eq!(
+        reopened.processing.threshold.hsv_state.locks,
+        [false, true, false]
+    );
 }
 
 #[test]
@@ -668,6 +982,60 @@ fn baseline_still_formats_and_grayscale_alpha_layout_decode() {
 }
 
 #[test]
+fn embedded_rgb_profiles_are_converted_to_canonical_srgb_before_linearization() {
+    let encoded = [128_u8, 102, 77];
+    let srgb = raster::decode(
+        &png_with_icc(encoded, &moxcms::ColorProfile::new_srgb()),
+        None,
+    )
+    .unwrap();
+    assert_eq!(
+        srgb.interpretation.profile,
+        ProfileInterpretation::EmbeddedProfileConvertedToSrgb
+    );
+    for (actual, encoded) in srgb.pixels.pixels[0][..3].iter().zip(encoded) {
+        assert!((*actual - srgb_to_linear(encoded as f32 / 255.0)).abs() < 3.0e-3);
+    }
+
+    let p3 = raster::decode(
+        &png_with_icc(encoded, &moxcms::ColorProfile::new_display_p3()),
+        None,
+    )
+    .unwrap();
+    assert_eq!(
+        p3.interpretation.profile,
+        ProfileInterpretation::EmbeddedProfileConvertedToSrgb
+    );
+
+    // Independent Display-P3-linear -> XYZ(D65) -> linear-sRGB reference matrices. This checks
+    // the source profile affects the canonical pixels rather than merely exercising the CMS API.
+    let p3_linear = encoded.map(|channel| srgb_to_linear(channel as f32 / 255.0) as f64);
+    let xyz = [
+        0.486_570_948_648_216_2 * p3_linear[0]
+            + 0.265_667_693_169_093_06 * p3_linear[1]
+            + 0.198_217_285_234_362_5 * p3_linear[2],
+        0.228_974_564_069_748_8 * p3_linear[0]
+            + 0.691_738_521_836_506_4 * p3_linear[1]
+            + 0.079_286_914_093_745 * p3_linear[2],
+        0.045_113_381_858_902_64 * p3_linear[1] + 1.043_944_368_900_976 * p3_linear[2],
+    ];
+    let expected = [
+        3.240_969_941_904_522_6 * xyz[0]
+            - 1.537_383_177_570_094 * xyz[1]
+            - 0.498_610_760_293_003_4 * xyz[2],
+        -0.969_243_636_280_879_6 * xyz[0]
+            + 1.875_967_501_507_720_2 * xyz[1]
+            + 0.041_555_057_407_175 * xyz[2],
+        0.055_630_079_696_993_66 * xyz[0] - 0.203_976_958_888_976_52 * xyz[1]
+            + 1.056_971_514_242_878_6 * xyz[2],
+    ];
+    for (actual, expected) in p3.pixels.pixels[0][..3].iter().zip(expected) {
+        assert!((*actual as f64 - expected).abs() < 4.0e-3);
+    }
+    assert_ne!(p3.pixels.pixels[0][..3], srgb.pixels.pixels[0][..3]);
+}
+
+#[test]
 fn spectrum_breakpoint_png_with_svg_bytes_decodes_as_raster() {
     let path = std::path::Path::new("archive/webapp/SpectrumBreakpoint.png");
     let (bytes, decoded) = raster::decode_file(path).unwrap();
@@ -803,10 +1171,12 @@ fn site_mutations_reset_pairing_and_lock_protects_every_parameter() {
 }
 
 #[test]
-fn hsv_matching_uses_true_cylinder_geometry() {
-    let linear_hsv =
-        |h, s, v| hsv_to_encoded([h, s, v]).map(|channel| srgb_to_linear(channel as f32));
-    let source_rgb = linear_hsv(0.0, 1.0, 1.0);
+fn hsv_matching_cone_maps_near_black_pixels_to_the_darkest_site() {
+    let linear_rgb8 = |rgb: [u8; 3]| {
+        encoded_to_linear(rgb.map(|channel| f64::from(channel) / 255.0))
+            .map(|channel| channel as f32)
+    };
+    let source_rgb = linear_rgb8([1, 1, 1]);
     let source = threshiator::document::PixelImage::new(
         1,
         1,
@@ -816,14 +1186,14 @@ fn hsv_matching_uses_true_cylinder_geometry() {
     let mut recipe = Recipe::default();
     recipe.voronoi.matching = VoronoiMatching::Hsv;
     recipe.voronoi.sites = vec![
-        sample(1, linear_hsv(90.0, 1.0, 1.0), [0.9, 0.1, 0.1], 0.0),
-        sample(2, linear_hsv(0.0, 0.0, 1.0), [0.1, 0.9, 0.1], 0.0),
+        sample(1, linear_rgb8([80, 155, 180]), [0.9, 0.1, 0.1], 0.0),
+        sample(2, linear_rgb8([1, 3, 34]), [0.1, 0.9, 0.1], 0.0),
     ];
     assert_eq!(&process(&source, &recipe).pixels[0][..3], &[0.1, 0.9, 0.1]);
 }
 
 #[test]
-fn hsv_archived_neutral_weight_fixture_is_exact_and_alpha_safe() {
+fn hsv_cone_reference_fixture_is_deterministic_and_alpha_safe() {
     let linear_hsv = |h, s, v| hsv_to_encoded([h, s, v]).map(|c| srgb_to_linear(c as f32));
     let site =
         |id, hsv: [f64; 3], target| sample(id, linear_hsv(hsv[0], hsv[1], hsv[2]), target, 0.0);
@@ -1102,6 +1472,7 @@ fn every_voronoi_metric_agrees_between_bounded_preview_and_full_source() {
     ];
     for matching in [
         VoronoiMatching::Perceptual,
+        VoronoiMatching::Okhsl,
         VoronoiMatching::Rgb,
         VoronoiMatching::Hsv,
     ] {
@@ -1190,6 +1561,107 @@ fn oklab_reference_fixture_and_preview_full_classification_agree() {
 }
 
 #[test]
+fn oklab_known_colors_round_trip_and_use_unscaled_cartesian_axes() {
+    let references = [
+        ([0.0, 0.0, 0.0], [0.0, 0.0, 0.0]),
+        ([1.0, 1.0, 1.0], [1.0, 0.0, 0.0]),
+        ([1.0, 0.0, 0.0], [0.627_955_36, 0.224_863_06, 0.125_846_30]),
+        ([0.0, 1.0, 0.0], [0.866_439_61, -0.233_887_57, 0.179_498_48]),
+        (
+            [0.0, 0.0, 1.0],
+            [0.452_013_72, -0.032_456_98, -0.311_528_15],
+        ),
+    ];
+    for (linear, expected) in references {
+        let lab = linear_rgb_to_oklab(linear.map(|value| value as f32));
+        for (actual, expected) in lab.into_iter().zip(expected) {
+            assert!((actual - expected).abs() < 2.0e-7);
+        }
+        let round_trip = oklab_to_linear(lab);
+        for (actual, expected) in round_trip.into_iter().zip(linear) {
+            assert!((actual - expected).abs() < 5.0e-7);
+        }
+    }
+
+    // Raw OKLab says A wins: dA²=.05²+.03²=.0034; dB²=.07²=.0049. Independently
+    // normalizing chroma axes would incorrectly choose B.
+    let pixel_lab = [0.65, 0.02, 0.02];
+    let site_a_lab = [0.60, 0.05, 0.02];
+    let site_b_lab = [0.72, 0.02, 0.02];
+    let source_rgb = oklab_to_linear(pixel_lab).map(|value| value as f32);
+    let site_a = oklab_to_linear(site_a_lab).map(|value| value as f32);
+    let site_b = oklab_to_linear(site_b_lab).map(|value| value as f32);
+    assert!(
+        source_rgb
+            .iter()
+            .chain(site_a.iter())
+            .chain(site_b.iter())
+            .all(|v| (0.0..=1.0).contains(v))
+    );
+    let source = threshiator::document::PixelImage::new(
+        1,
+        1,
+        vec![[source_rgb[0], source_rgb[1], source_rgb[2], 1.0]],
+    )
+    .unwrap();
+    let mut recipe = Recipe::default();
+    recipe.voronoi.matching = VoronoiMatching::Perceptual;
+    recipe.voronoi.sites = vec![
+        sample(1, site_a, [1.0, 0.0, 0.0], 0.0),
+        sample(2, site_b, [0.0, 0.0, 1.0], 0.0),
+    ];
+    assert_eq!(process(&source, &recipe).pixels[0][..3], [1.0, 0.0, 0.0]);
+}
+
+#[test]
+fn full_source_distribution_prevents_checkerboard_proxy_aliasing() {
+    let colors = [[0.85, 0.05, 0.05, 1.0], [0.05, 0.05, 0.85, 1.0]];
+    let pixels = (0..6400).map(|index| colors[index % 2]).collect();
+    let source = threshiator::document::PixelImage::new(3200, 2, pixels).unwrap();
+    let proxy = bounded_preview(&source);
+    assert!(proxy.pixels.iter().all(|pixel| *pixel == colors[0]));
+    let sites = auto_initialize(&proxy, &source);
+    assert_eq!(sites.sites.len(), 2);
+    assert!(
+        sites
+            .sites
+            .iter()
+            .all(|site| site.size == SampleSize::Point)
+    );
+    for color in colors {
+        assert!(sites.sites.iter().any(|site| site.source_color == color));
+    }
+}
+
+#[test]
+fn perceptual_influence_scales_complete_oklab_distance_squared() {
+    let pixel_lab = [0.60, 0.0, 0.0];
+    let far_lab = [0.42, 0.0, 0.0];
+    let near_lab = [0.65, 0.0, 0.0];
+    let pixel = oklab_to_linear(pixel_lab).map(|value| value as f32);
+    let far = oklab_to_linear(far_lab).map(|value| value as f32);
+    let near = oklab_to_linear(near_lab).map(|value| value as f32);
+    let source =
+        threshiator::document::PixelImage::new(1, 1, vec![[pixel[0], pixel[1], pixel[2], 1.0]])
+            .unwrap();
+    let mut recipe = Recipe::default();
+    recipe.voronoi.matching = VoronoiMatching::Perceptual;
+    recipe.voronoi.sites = vec![
+        sample(1, far, [1.0, 0.0, 0.0], 0.0),
+        sample(2, near, [0.0, 0.0, 1.0], 0.0),
+    ];
+    assert_eq!(process(&source, &recipe).pixels[0][..3], [0.0, 0.0, 1.0]);
+
+    // .18² / 2⁴ = .002025, which beats the near site's .05² = .0025.
+    recipe.voronoi.sites[0].influence = 4.0;
+    assert_eq!(process(&source, &recipe).pixels[0][..3], [1.0, 0.0, 0.0]);
+
+    // At -4 the same site's weighted score is .18² × 2⁴, so the near site wins again.
+    recipe.voronoi.sites[0].influence = -4.0;
+    assert_eq!(process(&source, &recipe).pixels[0][..3], [0.0, 0.0, 1.0]);
+}
+
+#[test]
 fn bounded_proxy_uses_full_resolution_samples_and_corresponding_labels_agree() {
     let pixels: Vec<_> = (0..3200)
         .map(|x| {
@@ -1262,6 +1734,7 @@ fn replacement_gate_only_replaces_after_explicit_resolution() {
 
 #[test]
 fn color_models_roundtrip_references_and_retain_latent_hue() {
+    assert_eq!(ColorModel::default(), ColorModel::Okhsl);
     let red = [1.0, 0.0, 0.0];
     assert_eq!(encoded_to_hsv(red), [0.0, 1.0, 1.0]);
     assert_eq!(encoded_to_hsl(red), [0.0, 1.0, 0.5]);
@@ -1272,66 +1745,181 @@ fn color_models_roundtrip_references_and_retain_latent_hue() {
             assert!((hsv[channel] - rgb[channel]).abs() < 1e-10);
             assert!((hsl[channel] - rgb[channel]).abs() < 1e-10);
         }
+        let linear = encoded_to_linear(rgb);
+        let okhsl = linear_to_okhsl(linear).unwrap();
+        let roundtrip = okhsl_to_linear(okhsl).unwrap();
+        for channel in 0..3 {
+            assert!((roundtrip[channel] - linear[channel]).abs() < 2e-7);
+        }
     }
     let mut draft = DraftColor::new([0.5, 0.5, 0.5]);
-    draft.set_values(ColorModel::Hsv, [287.0, 0.0, 0.7]);
-    assert!((draft.values(ColorModel::Hsv)[0] - 287.0).abs() < 1e-9);
+    draft.set_values(ColorModel::Okhsl, [287.0, 0.0, 0.7]);
+    assert!((draft.values(ColorModel::Okhsl)[0] - 287.0).abs() < 1e-9);
+    draft.set_values(ColorModel::Okhsl, [287.0, 0.8, 0.7]);
+    let restored_hue = draft.values(ColorModel::Okhsl)[0];
+    assert!((restored_hue - 287.0).abs() < 1e-5, "{restored_hue}");
 }
 
 #[test]
-fn oklab_plane_mapping_projection_and_marker_are_coherent() {
+fn picker_models_share_one_encoded_srgb_color_without_switch_drift() {
+    let expected = [
+        0x50 as f64 / 255.0,
+        0x9b as f64 / 255.0,
+        0xb4 as f64 / 255.0,
+    ];
+    let linear = encoded_to_linear(expected);
+    let draft = DraftColor::new(linear.map(|channel| channel as f32));
+    let canonical = draft.encoded();
+    assert_eq!(draft, {
+        let _ = draft.values(ColorModel::Okhsl);
+        let _ = draft.values(ColorModel::Hsv);
+        let _ = draft.values(ColorModel::Hsl);
+        draft
+    });
+    for model in [ColorModel::Okhsl, ColorModel::Hsv, ColorModel::Hsl] {
+        let mut reconstructed = draft;
+        reconstructed.set_values(model, draft.values(model));
+        for (actual, expected) in reconstructed.encoded().into_iter().zip(canonical) {
+            assert!(
+                (actual - expected).abs() < 2.0e-6,
+                "{model:?}: {actual} != {expected}"
+            );
+        }
+        assert_eq!(
+            reconstructed
+                .encoded()
+                .map(|channel| (channel * 255.0).round() as u8),
+            [0x50, 0x9b, 0xb4]
+        );
+    }
+    for (actual, expected) in linear_to_encoded(draft.linear).into_iter().zip(canonical) {
+        assert!((actual - expected).abs() < f64::EPSILON);
+    }
+}
+
+#[test]
+fn neutral_hue_memory_is_independent_for_hsv_hsl_and_okhsl() {
+    let mut draft = DraftColor::new([0.5, 0.5, 0.5]);
+    draft.set_values(ColorModel::Hsv, [25.0, 0.0, 0.5]);
+    draft.set_values(ColorModel::Hsl, [145.0, 0.0, 0.5]);
+    draft.set_values(ColorModel::Okhsl, [285.0, 0.0, 0.5]);
+    assert!((draft.values(ColorModel::Hsv)[0] - 25.0).abs() < 1.0e-9);
+    assert!((draft.values(ColorModel::Hsl)[0] - 145.0).abs() < 1.0e-9);
+    assert!((draft.values(ColorModel::Okhsl)[0] - 285.0).abs() < 1.0e-9);
+}
+
+#[test]
+fn okhsl_matches_reference_values_and_rejects_invalid_inputs() {
     let reference = [0.12, 0.53, 0.81];
     let roundtrip = oklab_to_linear(linear_to_oklab(reference));
     for channel in 0..3 {
-        assert!((roundtrip[channel] - reference[channel]).abs() < 1e-6);
+        assert!(
+            (roundtrip[channel] - reference[channel]).abs() < 2e-7,
+            "channel {channel}: reference={}, roundtrip={}",
+            reference[channel],
+            roundtrip[channel]
+        );
     }
-    let valid = oklab_plane(0.65, 0.05, -0.05);
-    assert!(in_srgb_gamut(oklab_to_linear(valid)));
-    assert_eq!(oklab_plane_projected(0.65, 0.05, -0.05), valid);
-    let coordinates = oklab_plane_coords(valid);
-    assert!((coordinates[0] - 0.05).abs() < 1e-12);
-    assert!((coordinates[1] + 0.05).abs() < 1e-12);
-    assert_eq!(oklab_plane(valid[0], coordinates[0], coordinates[1]), valid);
-
-    let raw_invalid = oklab_plane(0.65, 1.0, 0.0);
-    assert!(!in_srgb_gamut(oklab_to_linear(raw_invalid)));
-    let projected = oklab_plane_projected(0.65, 1.0, 0.0);
-    assert!(in_srgb_gamut(oklab_to_linear(projected)));
-    let max = max_oklab_chroma(0.65, 0.0);
-    assert!((projected[1] - max).abs() < 1e-8);
-    assert!(projected[2].abs() < 1e-12);
+    let brown = linear_to_okhsl(encoded_to_linear([
+        0x83 as f64 / 255.0,
+        0x49 as f64 / 255.0,
+        0x41 as f64 / 255.0,
+    ]))
+    .unwrap();
+    assert!(
+        (brown[0] * 360.0 - 28.773_829_336_976_384).abs() < 1e-5,
+        "brown OKHSL: {brown:?}"
+    );
+    assert!((brown[1] - 0.462_921_718_345_498_6).abs() < 1e-7);
+    assert!((brown[2] - 0.390_099_814_614_742_7).abs() < 1e-7);
+    let brown_cylinder = linear_to_okhsl_cylinder(encoded_to_linear([
+        0x83 as f64 / 255.0,
+        0x49 as f64 / 255.0,
+        0x41 as f64 / 255.0,
+    ]))
+    .unwrap();
+    for (actual, expected) in brown_cylinder.into_iter().zip([
+        0.405_763_216_731_3,
+        0.222_828_923_759_5,
+        0.390_099_814_614_7,
+    ]) {
+        assert!((actual - expected).abs() < 2e-6, "{brown_cylinder:?}");
+    }
+    let blue = linear_to_okhsl([0.0, 0.0, 1.0]).unwrap();
+    assert!((blue[0] * 360.0 - 264.052_021_148_125_16).abs() < 1e-5);
+    assert!((blue[1] - 0.999_999_989_726_226_1).abs() < 1e-7);
+    assert!((blue[2] - 0.366_565_335_813_274).abs() < 1e-7);
+    let blue_cylinder = linear_to_okhsl_cylinder([0.0, 0.0, 1.0]).unwrap();
+    for (actual, expected) in blue_cylinder.into_iter().zip([
+        -0.103_625_452_719_4,
+        -0.994_616_380_822_9,
+        0.366_565_335_813_3,
+    ]) {
+        assert!((actual - expected).abs() < 2e-6, "{blue_cylinder:?}");
+    }
+    let encoded = okhsl_to_linear([0.0, 0.5, 0.5])
+        .unwrap()
+        .map(|channel| threshiator::processing::linear_to_srgb(channel as f32));
+    assert_eq!(
+        encoded.map(|channel| (channel * 255.0).round() as u8),
+        [0xaa, 0x5a, 0x74]
+    );
+    assert!(okhsl_to_linear([f64::NAN, 0.5, 0.5]).is_none());
+    assert!(linear_to_okhsl([1.1, 0.0, 0.0]).is_none());
     assert_eq!(parse_hex("#abc").unwrap(), parse_hex("#AABBCC").unwrap());
     assert!(parse_hex("#abcd").is_err());
     assert!(parse_hex("#GG0000").is_err());
 }
 
 #[test]
-fn oklab_plane_keyboard_adjusts_axes_projects_and_preserves_lightness() {
-    let neutral = [0.65, 0.0, 0.0];
+fn okhsl_fills_the_complete_picker_domain_and_keyboard_is_polar() {
+    for hue_degrees in (0..360).step_by(5) {
+        for saturation in [0.0, 0.25, 0.799_999, 0.8, 0.800_001, 1.0] {
+            for lightness in [0.0, 0.01, 0.25, 0.5, 0.75, 0.99, 1.0] {
+                let linear = okhsl_to_linear([hue_degrees as f64 / 360.0, saturation, lightness])
+                    .unwrap_or_else(|| {
+                        panic!("gap at H={hue_degrees}, S={saturation}, L={lightness}")
+                    });
+                assert!(linear.iter().all(|channel| channel.is_finite()));
+                assert!(in_srgb_gamut(linear));
+            }
+        }
+    }
+    for red in 0..=10 {
+        for green in 0..=10 {
+            for blue in 0..=10 {
+                let linear = [red as f64 / 10.0, green as f64 / 10.0, blue as f64 / 10.0];
+                let roundtrip = okhsl_to_linear(linear_to_okhsl(linear).unwrap()).unwrap();
+                for channel in 0..3 {
+                    assert!(
+                        (roundtrip[channel] - linear[channel]).abs() < 5e-7,
+                        "linear={linear:?}, roundtrip={roundtrip:?}, channel={channel}"
+                    );
+                }
+            }
+        }
+    }
+
+    let neutral = [287.0, 0.0, 0.65];
     assert_eq!(
-        adjust_oklab_plane(neutral, PlaneKey::Right, false),
-        [0.65, 0.005, 0.0]
+        adjust_okhsl(neutral, PlaneKey::Right, false),
+        [288.0, 0.0, 0.65]
     );
     assert_eq!(
-        adjust_oklab_plane(neutral, PlaneKey::Left, true),
-        [0.65, -0.0005, 0.0]
+        adjust_okhsl(neutral, PlaneKey::Left, true),
+        [286.9, 0.0, 0.65]
     );
     assert_eq!(
-        adjust_oklab_plane(neutral, PlaneKey::Up, false),
-        [0.65, 0.0, 0.005]
+        adjust_okhsl(neutral, PlaneKey::Up, false),
+        [287.0, 0.01, 0.65]
     );
     assert_eq!(
-        adjust_oklab_plane(neutral, PlaneKey::Down, true),
-        [0.65, 0.0, -0.0005]
+        adjust_okhsl([287.0, 0.5, 0.65], PlaneKey::Down, true),
+        [287.0, 0.499, 0.65]
     );
-    let saturated = oklab_plane_projected(0.65, 1.0, 0.0);
-    let adjusted = adjust_oklab_plane(saturated, PlaneKey::Right, false);
-    assert_eq!(adjusted[0], saturated[0]);
-    assert!(adjusted.iter().all(|value| value.is_finite()));
-    assert!(in_srgb_gamut(oklab_to_linear(adjusted)));
     assert_eq!(
-        adjust_oklab_plane(saturated, PlaneKey::Home, false),
-        [0.65, 0.0, 0.0]
+        adjust_okhsl([287.0, 1.0, 0.65], PlaneKey::Home, false),
+        neutral
     );
 }
 
@@ -1423,7 +2011,298 @@ fn variable_band_quantizers_validate_and_keep_exact_boundaries_in_lower_band() {
 }
 
 #[test]
-fn encoded_rgb_is_float_precise_bypassable_and_distinct_from_legacy_linear() {
+fn threshold_histograms_use_float_rgb_and_straight_alpha_weights() {
+    let encoded = [0.25, 0.5, 0.75];
+    let linear = encoded.map(srgb_to_linear);
+    let source = threshiator::document::PixelImage::new(
+        3,
+        1,
+        vec![
+            [linear[0], linear[1], linear[2], 1.0],
+            [0.25, 0.5, 0.75, 0.5],
+            [1.0, 0.0, 1.0, 0.0],
+        ],
+    )
+    .unwrap();
+    let histogram = ThresholdHistograms::build(&source);
+    let bin = |value: f32| {
+        (value.clamp(0.0, 1.0) * (THRESHOLD_HISTOGRAM_BINS - 1) as f32).round() as usize
+    };
+
+    assert_eq!(histogram.visible_alpha, 1.5);
+    for (channel, encoded_value) in encoded.into_iter().enumerate() {
+        assert_eq!(histogram.encoded_rgb[channel][bin(encoded_value)], 1.0);
+    }
+    let encoded_partial = [0.25, 0.5, 0.75].map(threshiator::processing::linear_to_srgb);
+    for (channel, encoded_value) in encoded_partial.into_iter().enumerate() {
+        assert_eq!(histogram.encoded_rgb[channel][bin(encoded_value)], 0.5);
+    }
+    assert_eq!(histogram.encoded_rgb[0][THRESHOLD_HISTOGRAM_BINS - 1], 0.0);
+    assert_eq!(histogram.encoded_rgb[1][0], 0.0);
+}
+
+#[test]
+fn threshold_histograms_keep_linked_rgb_distributions_distinct() {
+    let encoded = [0.1, 0.5, 0.9];
+    let source = threshiator::document::PixelImage::new(
+        1,
+        1,
+        vec![[
+            srgb_to_linear(encoded[0]),
+            srgb_to_linear(encoded[1]),
+            srgb_to_linear(encoded[2]),
+            1.0,
+        ]],
+    )
+    .unwrap();
+    let histogram = ThresholdHistograms::build(&source);
+
+    assert_ne!(histogram.encoded_rgb[0], histogram.encoded_rgb[1]);
+    assert_ne!(histogram.encoded_rgb[1], histogram.encoded_rgb[2]);
+    assert_eq!(
+        threshold_histogram_series_mask(ThresholdEditTarget::Red),
+        [true, false, false]
+    );
+    assert_eq!(
+        threshold_histogram_series_mask(ThresholdEditTarget::LinkedRgb),
+        [true, true, true]
+    );
+}
+
+#[test]
+fn threshold_histogram_visibility_follows_semantic_target_only() {
+    for (target, expected) in [
+        (ThresholdEditTarget::Red, [true, false, false]),
+        (ThresholdEditTarget::Green, [false, true, false]),
+        (ThresholdEditTarget::Blue, [false, false, true]),
+        (ThresholdEditTarget::LinkedRgb, [true, true, true]),
+        (ThresholdEditTarget::Hue, [true, false, false]),
+        (ThresholdEditTarget::Saturation, [false, true, false]),
+        (ThresholdEditTarget::Value, [false, false, true]),
+        (
+            ThresholdEditTarget::LinkedSaturationValue,
+            [false, true, true],
+        ),
+    ] {
+        assert_eq!(threshold_histogram_series_mask(target), expected);
+    }
+}
+
+#[test]
+fn threshold_histograms_keep_exact_hsv_channels_and_alpha_policy() {
+    let linear_hsv = |hue, saturation, value, alpha| {
+        let encoded = hsv_to_encoded([hue, saturation, value]);
+        [
+            srgb_to_linear(encoded[0] as f32),
+            srgb_to_linear(encoded[1] as f32),
+            srgb_to_linear(encoded[2] as f32),
+            alpha,
+        ]
+    };
+    let source = threshiator::document::PixelImage::new(
+        4,
+        1,
+        vec![
+            linear_hsv(0.0, 1.0, 1.0, 1.0),
+            linear_hsv(120.0, 0.5, 0.75, 0.5),
+            linear_hsv(0.0, 0.0, 0.4, 0.25),
+            linear_hsv(240.0, 1.0, 1.0, 0.0),
+        ],
+    )
+    .unwrap();
+    let histogram = ThresholdHistograms::build(&source);
+    let unit_bin = |value: f64| {
+        (value.clamp(0.0, 1.0) * (THRESHOLD_HISTOGRAM_BINS - 1) as f64).round() as usize
+    };
+    let hue_bin = |degrees: f64| {
+        ((degrees.rem_euclid(360.0) / 360.0) * THRESHOLD_HISTOGRAM_BINS as f64).floor() as usize
+            % THRESHOLD_HISTOGRAM_BINS
+    };
+
+    assert_eq!(histogram.visible_alpha, 1.75);
+    assert_eq!(histogram.hsv[0].iter().sum::<f64>(), 1.5);
+    assert_eq!(histogram.hsv[0][hue_bin(0.0)], 1.0);
+    assert_eq!(histogram.hsv[0][hue_bin(120.0)], 0.5);
+    assert_eq!(histogram.hsv[0][hue_bin(240.0)], 0.0);
+    assert_eq!(histogram.hsv[1][unit_bin(0.0)], 0.25);
+    assert_eq!(histogram.hsv[1][unit_bin(0.5)], 0.5);
+    assert_eq!(histogram.hsv[1][unit_bin(1.0)], 1.0);
+    assert_eq!(histogram.hsv[2][unit_bin(0.4)], 0.25);
+    assert_eq!(histogram.hsv[2][unit_bin(0.75)], 0.5);
+    assert_eq!(histogram.hsv[2][unit_bin(1.0)], 1.0);
+}
+
+#[test]
+fn threshold_hue_histogram_rotates_at_seam_and_has_deterministic_mean() {
+    let hue_bin = |degrees: f64| {
+        ((degrees.rem_euclid(360.0) / 360.0) * THRESHOLD_HISTOGRAM_BINS as f64).floor() as usize
+            % THRESHOLD_HISTOGRAM_BINS
+    };
+    let mut absolute = vec![0.0; THRESHOLD_HISTOGRAM_BINS];
+    absolute[hue_bin(359.0)] = 2.0;
+    absolute[hue_bin(1.0)] = 3.0;
+    let relative = relative_hue_histogram(&absolute, 0.0);
+    assert_eq!(relative[hue_bin(359.0)], 2.0);
+    assert_eq!(relative[hue_bin(1.0)], 3.0);
+    assert_eq!(relative.iter().sum::<f64>(), 5.0);
+
+    let mut shifted_absolute = vec![0.0; THRESHOLD_HISTOGRAM_BINS];
+    shifted_absolute[hue_bin(90.0)] = 4.0;
+    shifted_absolute[hue_bin(10.0)] = 6.0;
+    let shifted_relative = relative_hue_histogram(&shifted_absolute, 45.0);
+    assert_eq!(shifted_relative[hue_bin(45.0)], 4.0);
+    assert_eq!(shifted_relative[hue_bin(325.0)], 6.0);
+    assert_eq!(shifted_relative.iter().sum::<f64>(), 10.0);
+
+    let linear_hue = |hue| {
+        let encoded = hsv_to_encoded([hue, 1.0, 1.0]);
+        [
+            srgb_to_linear(encoded[0] as f32),
+            srgb_to_linear(encoded[1] as f32),
+            srgb_to_linear(encoded[2] as f32),
+            1.0,
+        ]
+    };
+    let seam_source =
+        threshiator::document::PixelImage::new(2, 1, vec![linear_hue(350.0), linear_hue(10.0)])
+            .unwrap();
+    let seam_mean = ThresholdHistograms::build(&seam_source).representative_hue_degrees;
+    assert!(seam_mean < 1.0e-5 || (360.0 - seam_mean) < 1.0e-5);
+
+    let grayscale =
+        threshiator::document::PixelImage::new(1, 1, vec![[0.2, 0.2, 0.2, 1.0]]).unwrap();
+    assert_eq!(
+        ThresholdHistograms::build(&grayscale).representative_hue_degrees,
+        0.0
+    );
+
+    let weighted_hue = |hue, saturation, alpha| {
+        let encoded = hsv_to_encoded([hue, saturation, 1.0]);
+        [
+            srgb_to_linear(encoded[0] as f32),
+            srgb_to_linear(encoded[1] as f32),
+            srgb_to_linear(encoded[2] as f32),
+            alpha,
+        ]
+    };
+    let weighted_source = threshiator::document::PixelImage::new(
+        2,
+        1,
+        vec![weighted_hue(0.0, 1.0, 1.0), weighted_hue(90.0, 0.5, 0.25)],
+    )
+    .unwrap();
+    let weighted_mean = ThresholdHistograms::build(&weighted_source).representative_hue_degrees;
+    let expected = 0.125_f64.atan2(1.0).to_degrees();
+    assert!((weighted_mean - expected).abs() < 1.0e-4);
+}
+
+#[test]
+fn threshold_hsv_link_presentation_keeps_saturation_and_value_distinct() {
+    assert_eq!(
+        threshold_histogram_series_mask(ThresholdEditTarget::Saturation),
+        [false, true, false]
+    );
+    assert_eq!(
+        threshold_histogram_series_mask(ThresholdEditTarget::LinkedSaturationValue),
+        [false, true, true]
+    );
+    let encoded = hsv_to_encoded([210.0, 0.25, 0.8]);
+    let source = threshiator::document::PixelImage::new(
+        1,
+        1,
+        vec![[
+            srgb_to_linear(encoded[0] as f32),
+            srgb_to_linear(encoded[1] as f32),
+            srgb_to_linear(encoded[2] as f32),
+            1.0,
+        ]],
+    )
+    .unwrap();
+    let histogram = ThresholdHistograms::build(&source);
+    assert_ne!(histogram.hsv[1], histogram.hsv[2]);
+}
+
+#[test]
+fn threshold_hsv_strip_colors_cover_origin_mapping_and_bypass() {
+    let assert_color = |actual: [f64; 3], expected: [f64; 3]| {
+        for (actual, expected) in actual.into_iter().zip(expected) {
+            assert!((actual - expected).abs() < 1.0e-9, "{actual} != {expected}");
+        }
+    };
+    assert_color(
+        hsv_input_strip_color(HsvHistogramComponent::Hue, 0.0, 30.0, 210.0),
+        hsv_to_encoded([30.0, 1.0, 1.0]),
+    );
+    assert_color(
+        hsv_input_strip_color(HsvHistogramComponent::Hue, 1.0, 30.0, 210.0),
+        hsv_to_encoded([30.0, 1.0, 1.0]),
+    );
+    assert_color(
+        hsv_input_strip_color(HsvHistogramComponent::Saturation, 0.5, 30.0, 210.0),
+        hsv_to_encoded([210.0, 0.5, 1.0]),
+    );
+    assert_color(
+        hsv_input_strip_color(HsvHistogramComponent::Value, 0.4, 30.0, 210.0),
+        [0.4, 0.4, 0.4],
+    );
+
+    let mapped = ComponentQuantizer {
+        enabled: true,
+        boundaries: vec![0.5],
+        outputs: vec![0.25, 0.75],
+    };
+    assert_color(
+        hsv_output_strip_color(HsvHistogramComponent::Hue, 0.1, &mapped, 30.0, 210.0),
+        hsv_to_encoded([120.0, 1.0, 1.0]),
+    );
+    let mut bypass = mapped;
+    bypass.enabled = false;
+    assert_color(
+        hsv_output_strip_color(HsvHistogramComponent::Hue, 0.1, &bypass, 30.0, 210.0),
+        hsv_to_encoded([66.0, 1.0, 1.0]),
+    );
+}
+
+#[test]
+fn threshold_histogram_build_honors_immediate_and_mid_scan_cancellation() {
+    use std::cell::Cell;
+
+    let source =
+        threshiator::document::PixelImage::new(16_385, 1, vec![[0.25, 0.5, 0.75, 1.0]; 16_385])
+            .unwrap();
+    assert!(ThresholdHistograms::build_cancellable(&source, || false).is_none());
+
+    let checks = Cell::new(0);
+    assert!(
+        ThresholdHistograms::build_cancellable(&source, || {
+            checks.set(checks.get() + 1);
+            checks.get() < 3
+        })
+        .is_none()
+    );
+    assert_eq!(checks.get(), 3);
+}
+
+#[test]
+fn threshold_histogram_build_does_not_mutate_source_or_processing() {
+    let source = threshiator::document::PixelImage::new(
+        2,
+        1,
+        vec![[0.04, 0.2, 0.8, 0.3], [0.9, 0.1, 0.5, 1.0]],
+    )
+    .unwrap();
+    let source_before = source.clone();
+    let recipe = Recipe::thresholds_default();
+    let result_before = process(&source, &recipe);
+
+    let _ = ThresholdHistograms::build(&source);
+
+    assert_eq!(source, source_before);
+    assert_eq!(process(&source, &recipe), result_before);
+}
+
+#[test]
+fn encoded_rgb_is_float_precise_and_bypassable() {
     let source =
         threshiator::document::PixelImage::new(1, 1, vec![[0.214_041_14, 0.32, 0.73, 0.37]])
             .unwrap();
@@ -1441,9 +2320,6 @@ fn encoded_rgb_is_float_precise_bypassable_and_distinct_from_legacy_linear() {
     assert!((output.pixels[0][1] - source.pixels[0][1]).abs() < 1.0e-6);
     assert!((output.pixels[0][2] - source.pixels[0][2]).abs() < 1.0e-6);
     assert_eq!(output.pixels[0][3], 0.37);
-    let mut legacy = encoded.clone();
-    legacy.threshold.rgb_state.encoding = ThresholdEncoding::LinearSrgbLegacy;
-    assert_ne!(process(&source, &legacy).pixels[0][0], output.pixels[0][0]);
 }
 
 #[test]
@@ -1536,11 +2412,187 @@ fn hsv_hue_wraps_at_seam_keeps_neutrals_and_sv_link_excludes_hue() {
         ])[0];
         assert!((actual - expected_hue).abs() < 1.0e-3);
     }
+    assert!(recipe.threshold.set_hue_origin_degrees(390.0));
+    assert_eq!(recipe.threshold.hsv_state.hue_origin_degrees, 30.0);
+    let shifted = process(&known, &recipe);
+    for (pixel, expected_hue) in shifted.pixels.iter().zip([345.0, 75.0, 165.0, 255.0]) {
+        let actual = encoded_to_hsv([
+            threshiator::processing::linear_to_srgb(pixel[0]) as f64,
+            threshiator::processing::linear_to_srgb(pixel[1]) as f64,
+            threshiator::processing::linear_to_srgb(pixel[2]) as f64,
+        ])[0];
+        let delta = (actual - expected_hue).abs();
+        assert!(delta.min(360.0 - delta) < 1.0e-3);
+    }
+    recipe.threshold.hsv_state.hue = ComponentQuantizer::automatic_circular(8);
+    let shifted_near_seam = threshiator::document::PixelImage::new(
+        2,
+        1,
+        [29.0, 31.0]
+            .map(|hue| {
+                let rgb = hsv_to_encoded([hue, 1.0, 0.8]);
+                [
+                    srgb_to_linear(rgb[0] as f32),
+                    srgb_to_linear(rgb[1] as f32),
+                    srgb_to_linear(rgb[2] as f32),
+                    1.0,
+                ]
+            })
+            .to_vec(),
+    )
+    .unwrap();
+    let shifted_seam = process(&shifted_near_seam, &recipe);
+    for (pixel, expected_hue) in shifted_seam.pixels.iter().zip([7.5, 52.5]) {
+        let actual = encoded_to_hsv([
+            threshiator::processing::linear_to_srgb(pixel[0]) as f64,
+            threshiator::processing::linear_to_srgb(pixel[1]) as f64,
+            threshiator::processing::linear_to_srgb(pixel[2]) as f64,
+        ])[0];
+        let delta = (actual - expected_hue).abs();
+        assert!(delta.min(360.0 - delta) < 1.0e-3);
+    }
+    assert_eq!(recipe.threshold.hsv_state.hue_origin_degrees, 30.0);
+    recipe.threshold.hsv_state.locks[0] = true;
+    assert!(!recipe.threshold.set_hue_origin_degrees(-30.0));
+    assert_eq!(recipe.threshold.hsv_state.hue_origin_degrees, 30.0);
     let neutral = threshiator::document::PixelImage::new(1, 1, vec![[0.4, 0.4, 0.4, 0.8]]).unwrap();
     let neutral_out = process(&neutral, &recipe);
     for index in 0..3 {
         assert!((neutral_out.pixels[0][index] - neutral.pixels[0][index]).abs() < 1.0e-5);
     }
+}
+
+#[test]
+fn threshold_automatic_baselines_follow_scalar_and_circular_formulas() {
+    for bands in [2, 3, 8, 32] {
+        let scalar = ComponentQuantizer::automatic_scalar(bands);
+        let expected_boundaries = (1..bands)
+            .map(|index| index as f32 / bands as f32)
+            .collect::<Vec<_>>();
+        let expected_outputs = (0..bands)
+            .map(|index| index as f32 / (bands - 1) as f32)
+            .collect::<Vec<_>>();
+        assert_eq!(scalar.boundaries, expected_boundaries);
+        assert_eq!(scalar.outputs, expected_outputs);
+        assert_eq!(scalar.outputs[0], 0.0);
+        assert_eq!(scalar.outputs[bands - 1], 1.0);
+
+        let circular = ComponentQuantizer::automatic_circular(bands);
+        let expected_outputs = (0..bands)
+            .map(|index| (index as f32 + 0.5) / bands as f32)
+            .collect::<Vec<_>>();
+        assert_eq!(circular.boundaries, expected_boundaries);
+        assert_eq!(circular.outputs, expected_outputs);
+        assert!(circular.outputs[bands - 1] < 1.0);
+        let seam_gap = circular.outputs[0] + 1.0 - circular.outputs[bands - 1];
+        assert!((seam_gap - 1.0 / bands as f32).abs() < f32::EPSILON);
+    }
+}
+
+#[test]
+fn threshold_automatic_baselines_process_authoritative_endpoints() {
+    let source = threshiator::document::PixelImage::new(
+        3,
+        1,
+        vec![
+            [0.0, 0.0, 0.0, 1.0],
+            [1.0, 1.0, 1.0, 1.0],
+            [1.0, 0.0, 0.0, 1.0],
+        ],
+    )
+    .unwrap();
+    let mut recipe = Recipe {
+        active_method: Method::Thresholds,
+        ..Recipe::default()
+    };
+
+    assert!(recipe.threshold.auto_map(ThresholdEditTarget::Red));
+    let rgb = process(&source, &recipe);
+    for (actual, expected) in rgb.pixels.iter().zip(source.pixels.iter()) {
+        for channel in 0..4 {
+            assert!((actual[channel] - expected[channel]).abs() < 1.0e-6);
+        }
+    }
+
+    recipe.threshold.active_space = ThresholdSpace::Hsv;
+    recipe.threshold.hsv_state.hue.enabled = false;
+    assert!(recipe.threshold.auto_map(ThresholdEditTarget::Saturation));
+    for component in [
+        &recipe.threshold.hsv_state.saturation,
+        &recipe.threshold.hsv_state.value,
+    ] {
+        assert_eq!(component.outputs.first(), Some(&0.0));
+        assert_eq!(component.outputs.last(), Some(&1.0));
+    }
+    let hsv = process(&source, &recipe);
+    for (actual, expected) in hsv.pixels.iter().zip(source.pixels.iter()) {
+        for channel in 0..4 {
+            assert!((actual[channel] - expected[channel]).abs() < 1.0e-5);
+        }
+    }
+}
+
+#[test]
+fn threshold_auto_map_respects_link_locks_process_and_hue_independence() {
+    let mut threshold = ThresholdState::default();
+    threshold.rgb_state.components = [
+        ComponentQuantizer::evenly_spaced(4),
+        ComponentQuantizer::evenly_spaced(6),
+        ComponentQuantizer::evenly_spaced(5),
+    ];
+    threshold.rgb_state.components[0].enabled = false;
+    threshold.rgb_state.components[1].enabled = true;
+    threshold.rgb_state.components[2].enabled = false;
+    threshold.rgb_state.locks[2] = true;
+    let locked_blue = threshold.rgb_state.components[2].clone();
+    assert!(threshold.auto_map(ThresholdEditTarget::Red));
+    let scalar = ComponentQuantizer::automatic_scalar(4);
+    assert_eq!(
+        threshold.rgb_state.components[0].boundaries,
+        scalar.boundaries
+    );
+    assert_eq!(threshold.rgb_state.components[0].outputs, scalar.outputs);
+    assert_eq!(
+        threshold.rgb_state.components[1].boundaries,
+        scalar.boundaries
+    );
+    assert_eq!(threshold.rgb_state.components[1].outputs, scalar.outputs);
+    assert_eq!(threshold.rgb_state.components[2], locked_blue);
+    assert!(!threshold.rgb_state.components[0].enabled);
+    assert!(threshold.rgb_state.components[1].enabled);
+    assert!(!threshold.rgb_state.components[2].enabled);
+    assert!(!threshold.auto_map(ThresholdEditTarget::Red));
+    threshold.rgb_state.locks[0] = true;
+    assert!(!threshold.auto_map(ThresholdEditTarget::Red));
+
+    threshold.active_space = ThresholdSpace::Hsv;
+    threshold.hsv_state.saturation = ComponentQuantizer::evenly_spaced(7);
+    threshold.hsv_state.value = ComponentQuantizer::evenly_spaced(5);
+    threshold.hsv_state.saturation.enabled = false;
+    threshold.hsv_state.value.enabled = true;
+    threshold.hsv_state.locks[2] = true;
+    let locked_value = threshold.hsv_state.value.clone();
+    assert!(threshold.auto_map(ThresholdEditTarget::Saturation));
+    let scalar = ComponentQuantizer::automatic_scalar(7);
+    assert_eq!(threshold.hsv_state.saturation.boundaries, scalar.boundaries);
+    assert_eq!(threshold.hsv_state.saturation.outputs, scalar.outputs);
+    assert_eq!(threshold.hsv_state.value, locked_value);
+    assert!(!threshold.hsv_state.saturation.enabled);
+    assert!(threshold.hsv_state.value.enabled);
+
+    threshold.hsv_state.hue = ComponentQuantizer::evenly_spaced(8);
+    threshold.hsv_state.hue.outputs.reverse();
+    threshold.hsv_state.hue_origin_degrees = 30.0;
+    let saturation_before = threshold.hsv_state.saturation.clone();
+    let value_before = threshold.hsv_state.value.clone();
+    assert!(threshold.auto_map(ThresholdEditTarget::Hue));
+    assert_eq!(
+        threshold.hsv_state.hue,
+        ComponentQuantizer::automatic_circular(8)
+    );
+    assert_eq!(threshold.hsv_state.hue_origin_degrees, 30.0);
+    assert_eq!(threshold.hsv_state.saturation, saturation_before);
+    assert_eq!(threshold.hsv_state.value, value_before);
 }
 
 #[test]
@@ -1553,6 +2605,7 @@ fn voronoi_matching_modes_are_deterministic_and_hsv_fades_hue_for_neutrals() {
     ];
     for matching in [
         VoronoiMatching::Perceptual,
+        VoronoiMatching::Okhsl,
         VoronoiMatching::Rgb,
         VoronoiMatching::Hsv,
     ] {
@@ -1595,18 +2648,89 @@ fn voronoi_matching_modes_are_deterministic_and_hsv_fades_hue_for_neutrals() {
 }
 
 #[test]
-fn project_v4_roundtrips_both_method_states_flags_and_ids() {
+fn okhsl_matching_uses_a_seam_safe_cylinder_and_existing_influence_rule() {
+    let linear = |hue_degrees: f64, saturation: f64, lightness: f64| {
+        okhsl_to_linear([hue_degrees / 360.0, saturation, lightness])
+            .unwrap()
+            .map(|channel| channel as f32)
+    };
+    let output = |pixel: [f32; 3], sites: Vec<VoronoiSite>| {
+        let source = threshiator::document::PixelImage::new(
+            1,
+            1,
+            vec![[pixel[0], pixel[1], pixel[2], 0.63]],
+        )
+        .unwrap();
+        let mut recipe = Recipe::default();
+        recipe.voronoi.matching = VoronoiMatching::Okhsl;
+        recipe.voronoi.sites = sites;
+        process(&source, &recipe).pixels[0]
+    };
+
+    let seam = output(
+        linear(359.0, 1.0, 0.5),
+        vec![
+            sample(1, linear(180.0, 1.0, 0.5), [0.9, 0.1, 0.1], 0.0),
+            sample(2, linear(1.0, 1.0, 0.5), [0.1, 0.9, 0.1], 0.0),
+        ],
+    );
+    assert_eq!(&seam[..3], &[0.1, 0.9, 0.1]);
+    assert_eq!(seam[3], 0.63);
+
+    // In the cylinder, the opposite-hue low-saturation site is closer (d²=.04) than
+    // the same-hue higher-saturation site (d²=.09). Raw component Hue distance cannot
+    // reproduce this assignment.
+    let cylinder = output(
+        linear(0.0, 0.1, 0.5),
+        vec![
+            sample(1, linear(180.0, 0.1, 0.5), [0.2, 0.3, 0.4], 0.0),
+            sample(2, linear(0.0, 0.4, 0.5), [0.7, 0.8, 0.9], 0.0),
+        ],
+    );
+    assert_eq!(&cylinder[..3], &[0.2, 0.3, 0.4]);
+
+    let neutral = output(
+        linear(240.0, 0.0, 0.5),
+        vec![
+            sample(1, linear(0.0, 0.0, 0.5), [0.1, 0.2, 0.3], 0.0),
+            sample(2, linear(180.0, 0.0, 0.5), [0.8, 0.7, 0.6], 0.0),
+        ],
+    );
+    assert_eq!(&neutral[..3], &[0.1, 0.2, 0.3]);
+
+    let influenced = output(
+        linear(0.0, 0.0, 0.5),
+        vec![
+            sample(1, linear(0.0, 0.0, 0.32), [0.9, 0.1, 0.1], 4.0),
+            sample(2, linear(0.0, 0.0, 0.55), [0.1, 0.1, 0.9], 0.0),
+        ],
+    );
+    assert_eq!(&influenced[..3], &[0.9, 0.1, 0.1]);
+    let suppressed = output(
+        linear(0.0, 0.0, 0.5),
+        vec![
+            sample(1, linear(0.0, 0.0, 0.32), [0.9, 0.1, 0.1], -4.0),
+            sample(2, linear(0.0, 0.0, 0.55), [0.1, 0.1, 0.9], 0.0),
+        ],
+    );
+    assert_eq!(&suppressed[..3], &[0.1, 0.1, 0.9]);
+}
+
+#[test]
+fn project_v5_roundtrips_both_method_states_flags_locks_and_ids() {
     let directory = tempfile::tempdir().unwrap();
-    let path = directory.path().join("v3.threshiator");
+    let path = directory.path().join("current-v5.threshiator");
     let (bytes, decoded) = tiny_source();
     let mut recipe = Recipe::thresholds_default();
     recipe.threshold.rgb_state.link = LinkPolicy::Independent;
     recipe.threshold.rgb_state.components[2].enabled = false;
+    recipe.threshold.rgb_state.locks = [false, true, false];
     recipe
         .threshold
         .set_rgb_component(0, ComponentQuantizer::evenly_spaced(8));
     recipe.threshold.active_space = ThresholdSpace::Hsv;
     recipe.threshold.hsv_state.hue_origin_degrees = 37.5;
+    recipe.threshold.hsv_state.locks = [true, false, true];
     recipe
         .threshold
         .set_hsv_component(1, ComponentQuantizer::evenly_spaced(32));
@@ -1632,54 +2756,86 @@ fn project_v4_roundtrips_both_method_states_flags_and_ids() {
 }
 
 #[test]
-fn v2_migration_is_clean_and_pixel_identical_to_legacy_processing() {
+fn project_v5_roundtrips_okhsl_matching_and_retains_hsv_serialization() {
     let directory = tempfile::tempdir().unwrap();
-    let path = directory.path().join("v2.threshiator");
+    let path = directory.path().join("okhsl-matching.threshiator");
     let (bytes, decoded) = tiny_source();
-    let mut recipe = Recipe::thresholds_default();
-    recipe.set_quantize([0.2, 0.79], [0.11, 0.51, 0.91]);
-    recipe.set_hue_degrees(12.5);
-    let mut recipe_json = serde_json::to_value(&recipe).unwrap();
-    recipe_json.as_object_mut().unwrap().remove("threshold");
-    recipe_json["voronoi"]
+    let mut recipe = Recipe::default();
+    recipe.voronoi.matching = VoronoiMatching::Okhsl;
+    let document = Document {
+        source_name: "fixture.png".into(),
+        source_bytes: bytes.into(),
+        source: decoded.pixels,
+        interpretation: decoded.interpretation,
+        recipe: recipe.clone(),
+        export_defaults: ExportDefaults::default(),
+        dirty: true,
+    };
+    project::save(&path, &document).unwrap();
+    let reopened = project::open(&path).unwrap();
+    assert_eq!(reopened.recipe.voronoi.matching, VoronoiMatching::Okhsl);
+
+    let hsv: VoronoiMatching = serde_json::from_str("\"Hsv\"").unwrap();
+    assert_eq!(hsv, VoronoiMatching::Hsv);
+}
+
+#[test]
+fn project_rejects_pre_release_versions_without_migration() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("pre-release-v4.threshiator");
+    let (bytes, decoded) = tiny_source();
+    let recipe = Recipe::thresholds_default();
+    let mut recipe_value = serde_json::to_value(&recipe).unwrap();
+    recipe_value["threshold"]["rgb_state"]
         .as_object_mut()
         .unwrap()
-        .remove("matching");
+        .remove("locks");
+    recipe_value["threshold"]["hsv_state"]
+        .as_object_mut()
+        .unwrap()
+        .remove("locks");
     let manifest = serde_json::json!({
-        "version": 2, "source_name": "fixture.png", "source_entry": "source/original",
-        "source_interpretation": decoded.interpretation, "recipe": recipe_json,
+        "version": 4,
+        "source_name": "legacy.png",
+        "source_entry": "source/original",
+        "source_interpretation": decoded.interpretation,
+        "recipe": recipe_value,
         "export_defaults": ExportDefaults::default(),
     });
     write_project_fixture(&path, &manifest, &bytes);
-    let migrated = project::open(&path).unwrap();
-    assert!(!migrated.dirty);
-    assert_eq!(
-        migrated.recipe.threshold.rgb_state.encoding,
-        ThresholdEncoding::LinearSrgbLegacy
-    );
-    let output = process(&migrated.source, &migrated.recipe);
-    let source = migrated.source.pixels[0];
-    let legacy_band = |value: f32| {
-        if value <= 0.2 {
-            0.11
-        } else if value <= 0.79 {
-            0.51
-        } else {
-            0.91
-        }
-    };
-    let expected = rotate_oklch(
-        [
-            legacy_band(source[0]),
-            legacy_band(source[1]),
-            legacy_band(source[2]),
-        ],
-        12.5,
-    );
-    for (index, expected) in expected.iter().enumerate() {
-        assert!((output.pixels[0][index] - expected).abs() < 1.0e-6);
-    }
-    assert_eq!(output.pixels[0][3], source[3]);
+    let error = project::open(&path).unwrap_err().to_string();
+    assert!(error.contains("unsupported pre-release project version 4"));
+    assert!(error.contains("only version 5"));
+
+    let current_path = directory.path().join("current-missing-locks.threshiator");
+    let mut current_manifest = manifest;
+    current_manifest["version"] = serde_json::json!(5);
+    write_project_fixture(&current_path, &current_manifest, &bytes);
+    let error = format!("{:#}", project::open(&current_path).unwrap_err());
+    assert!(error.contains("project version 5 manifest is malformed"));
+    assert!(error.contains("locks"));
+}
+
+#[test]
+fn project_v5_rejects_unsupported_export_defaults() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("unsupported-export.threshiator");
+    let (bytes, decoded) = tiny_source();
+    let manifest = serde_json::json!({
+        "version": 5,
+        "source_name": "fixture.png",
+        "source_entry": "source/original",
+        "source_interpretation": decoded.interpretation,
+        "recipe": Recipe::default(),
+        "export_defaults": {
+            "format": "JPEG",
+            "depth": "8-bit integer per channel"
+        },
+    });
+    write_project_fixture(&path, &manifest, &bytes);
+    let error = project::open(&path).unwrap_err().to_string();
+    assert!(error.contains("invalid export defaults"));
+    assert!(error.contains("JPEG"));
 }
 
 #[test]
@@ -1692,7 +2848,7 @@ fn malformed_v3_quantizer_arrays_are_rejected_actionably() {
     recipe_json["threshold"]["rgb_state"]["components"][0]["boundaries"] =
         serde_json::json!([0.8, 0.2]);
     let manifest = serde_json::json!({
-        "version": 3, "source_name": "fixture.png", "source_entry": "source/original",
+        "version": 5, "source_name": "fixture.png", "source_entry": "source/original",
         "source_interpretation": decoded.interpretation, "recipe": recipe_json,
         "export_defaults": ExportDefaults::default(),
     });
@@ -1703,7 +2859,7 @@ fn malformed_v3_quantizer_arrays_are_rejected_actionably() {
 }
 
 #[test]
-fn v3_groups_migrate_to_independent_v4_sites_with_inherited_targets() {
+fn project_current_schema_rejects_removed_color_groups() {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("legacy-v3.threshiator");
     let (bytes, decoded) = tiny_source();
@@ -1731,33 +2887,10 @@ fn v3_groups_migrate_to_independent_v4_sites_with_inherited_targets() {
         "export_defaults": ExportDefaults::default(),
     });
     write_project_fixture(&path, &manifest, &bytes);
-    let migrated = project::open(&path).unwrap();
-    assert_eq!(migrated.recipe.voronoi.sites.len(), 2);
-    assert_eq!(migrated.recipe.voronoi.sites[0].id, 4);
-    assert_eq!(migrated.recipe.voronoi.sites[1].id, 7);
-    assert_eq!(
-        migrated.recipe.voronoi.sites[0].target_color,
-        [0.1, 0.2, 0.8]
-    );
-    assert_eq!(
-        migrated.recipe.voronoi.sites[1].target_color,
-        [0.1, 0.2, 0.8]
-    );
-    assert!(!migrated.recipe.voronoi.sites.iter().any(|site| site.locked));
-    assert_eq!(migrated.recipe.voronoi.next_site_id, 8);
-    assert_eq!(migrated.recipe.voronoi.matching, VoronoiMatching::Hsv);
-    let mut edited = migrated;
-    assert!(edited.recipe.voronoi.set_target(4, [0.9, 0.1, 0.2]));
-    let v4_path = directory.path().join("migrated-v4.threshiator");
-    project::save(&v4_path, &edited).unwrap();
-    let reopened = project::open(&v4_path).unwrap();
-    assert_eq!(
-        reopened.recipe.voronoi.site(4).unwrap().target_color,
-        [0.9, 0.1, 0.2]
-    );
-    assert_eq!(
-        reopened.recipe.voronoi.site(7).unwrap().target_color,
-        [0.1, 0.2, 0.8]
+    let error = project::open(&path).unwrap_err().to_string();
+    assert!(
+        error.contains("project version 3 manifest is malformed")
+            || error.contains("unsupported pre-release project version 3")
     );
 }
 
@@ -1766,21 +2899,54 @@ fn threshold_editor_targets_follow_space_and_link_semantics() {
     let mut threshold = Recipe::default().threshold;
     assert_eq!(
         threshold.edit_targets(),
-        vec![ThresholdEditTarget::LinkedRgb]
+        vec![
+            ThresholdEditTarget::LinkedRgb,
+            ThresholdEditTarget::Red,
+            ThresholdEditTarget::Green,
+            ThresholdEditTarget::Blue,
+        ]
     );
+    threshold.rgb_state.link = LinkPolicy::Independent;
+    assert_eq!(
+        threshold.edit_targets(),
+        vec![
+            ThresholdEditTarget::Red,
+            ThresholdEditTarget::Green,
+            ThresholdEditTarget::Blue,
+        ]
+    );
+    assert_eq!(
+        threshold.reconcile_edit_target(ThresholdEditTarget::Green),
+        ThresholdEditTarget::Green
+    );
+    threshold.rgb_state.link = LinkPolicy::Linked;
     threshold.active_space = ThresholdSpace::Hsv;
     assert_eq!(
         threshold.edit_targets(),
         vec![
             ThresholdEditTarget::Hue,
-            ThresholdEditTarget::LinkedSaturationValue
+            ThresholdEditTarget::LinkedSaturationValue,
+            ThresholdEditTarget::Saturation,
+            ThresholdEditTarget::Value,
         ]
     );
     assert_eq!(
         threshold.reconcile_edit_target(ThresholdEditTarget::Value),
-        ThresholdEditTarget::LinkedSaturationValue
+        ThresholdEditTarget::Value
     );
     threshold.hsv_state.sv_link = LinkPolicy::Independent;
+    assert_eq!(
+        threshold.edit_targets(),
+        vec![
+            ThresholdEditTarget::Hue,
+            ThresholdEditTarget::Saturation,
+            ThresholdEditTarget::Value,
+        ]
+    );
+    assert_eq!(
+        threshold.reconcile_edit_target(ThresholdEditTarget::Value),
+        ThresholdEditTarget::Value
+    );
     assert_eq!(
         threshold.reconcile_edit_target(ThresholdEditTarget::LinkedSaturationValue),
         ThresholdEditTarget::Saturation
@@ -1849,4 +3015,111 @@ fn threshold_dialog_cancel_restores_state_and_prior_dirty_flag_only_after_edits(
     assert!(transaction.cancel(&mut state, &mut dirty));
     assert_eq!(state, original);
     assert!(!dirty);
+}
+
+#[test]
+fn threshold_band_split_is_exact_and_resize_respects_bounds() {
+    let mut quantizer = ComponentQuantizer {
+        enabled: true,
+        boundaries: vec![0.2, 0.7],
+        outputs: vec![0.1, 0.55, 0.9],
+    };
+    let before: Vec<_> = (0..=100)
+        .map(|step| quantizer.quantize(step as f32 / 100.0))
+        .collect();
+    assert!(quantizer.split_band(1));
+    let after: Vec<_> = (0..=100)
+        .map(|step| quantizer.quantize(step as f32 / 100.0))
+        .collect();
+    assert_eq!(after, before);
+    assert_eq!(quantizer.boundaries, vec![0.2, 0.45, 0.7]);
+    assert_eq!(quantizer.outputs, vec![0.1, 0.55, 0.55, 0.9]);
+    assert!(quantizer.resize_preserving_mapping(32, None, None));
+    assert_eq!(quantizer.outputs.len(), 32);
+    assert!(!quantizer.resize_preserving_mapping(40, None, None));
+    assert!(quantizer.resize_preserving_mapping(2, None, None));
+    assert_eq!(quantizer.outputs.len(), 2);
+    assert!(!quantizer.resize_preserving_mapping(1, None, None));
+}
+
+#[test]
+fn threshold_band_merge_is_deterministic_and_preserves_unrelated_boundaries() {
+    let mut quantizer = ComponentQuantizer {
+        enabled: true,
+        boundaries: vec![0.2, 0.7, 0.9],
+        outputs: vec![0.1, 0.4, 0.6, 0.95],
+    };
+    assert!(quantizer.remove_boundary(0));
+    assert_eq!(quantizer.boundaries, vec![0.7, 0.9]);
+    assert_eq!(quantizer.outputs, vec![0.4, 0.6, 0.95]);
+
+    let mut least_error = ComponentQuantizer {
+        enabled: true,
+        boundaries: vec![0.25, 0.5, 0.75],
+        outputs: vec![0.0, 0.8, 0.81, 1.0],
+    };
+    assert!(least_error.remove_least_error_boundary());
+    assert_eq!(least_error.boundaries, vec![0.25, 0.75]);
+    assert_eq!(least_error.outputs, vec![0.0, 0.8, 1.0]);
+}
+
+#[test]
+fn threshold_link_and_sync_skip_locks_and_preserve_process_flags() {
+    let mut threshold = ThresholdState::default();
+    threshold.rgb_state.link = LinkPolicy::Linked;
+    threshold.rgb_state.locks[1] = true;
+    threshold.rgb_state.components[0].enabled = false;
+    threshold.rgb_state.components[1].enabled = false;
+    threshold.rgb_state.components[2].enabled = true;
+    let edited = ComponentQuantizer::evenly_spaced(7);
+    assert!(threshold.set_edit_quantizer(ThresholdEditTarget::Red, edited.clone()));
+    assert_ne!(threshold.rgb_state.components[1].outputs.len(), 7);
+    assert_eq!(threshold.rgb_state.components[2].outputs.len(), 7);
+    assert!(!threshold.rgb_state.components[0].enabled);
+    assert!(!threshold.rgb_state.components[1].enabled);
+    assert!(threshold.rgb_state.components[2].enabled);
+
+    threshold.rgb_state.link = LinkPolicy::Independent;
+    threshold.rgb_state.components[2] = ComponentQuantizer::evenly_spaced(5);
+    threshold.rgb_state.components[2].enabled = true;
+    let (copied, skipped) = threshold.sync_from(ThresholdEditTarget::Red);
+    assert_eq!((copied, skipped), (1, 1));
+    assert_eq!(threshold.rgb_state.components[2].outputs, edited.outputs);
+    assert!(threshold.rgb_state.components[2].enabled);
+
+    threshold.active_space = ThresholdSpace::Hsv;
+    threshold.hsv_state.sv_link = LinkPolicy::Linked;
+    threshold.hsv_state.locks[2] = true;
+    assert!(threshold.set_edit_quantizer(
+        ThresholdEditTarget::Saturation,
+        ComponentQuantizer::evenly_spaced(9),
+    ));
+    assert_ne!(threshold.hsv_state.value.outputs.len(), 9);
+    assert_eq!(threshold.sync_from(ThresholdEditTarget::Hue), (0, 0));
+}
+
+#[test]
+fn threshold_mapping_locks_block_edits_and_resets_but_not_process() {
+    let mut threshold = ThresholdState::default();
+    threshold.rgb_state.locks[0] = true;
+    let original = threshold.rgb_state.components[0].clone();
+    assert!(!threshold.set_edit_quantizer(
+        ThresholdEditTarget::Red,
+        ComponentQuantizer::evenly_spaced(8),
+    ));
+    assert!(!reset_component(&mut threshold, ThresholdEditTarget::Red));
+    threshold.rgb_state.components[0].enabled = false;
+    reset_active_space(&mut threshold);
+    assert_eq!(
+        threshold.rgb_state.components[0].boundaries,
+        original.boundaries
+    );
+    assert!(!threshold.rgb_state.components[0].enabled);
+    assert!(threshold.rgb_state.locks[0]);
+    reset_method(&mut threshold);
+    assert_eq!(
+        threshold.rgb_state.components[0].boundaries,
+        original.boundaries
+    );
+    assert!(threshold.rgb_state.locks[0]);
 }

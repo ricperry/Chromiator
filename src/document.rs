@@ -32,7 +32,6 @@ impl PixelImage {
 pub struct Recipe {
     pub steps: Vec<ProcessingStep>,
     pub active_method: Method,
-    #[serde(default)]
     pub threshold: ThresholdState,
     pub voronoi: VoronoiState,
 }
@@ -64,11 +63,11 @@ impl ThresholdEditTarget {
             Self::Red => "Red",
             Self::Green => "Green",
             Self::Blue => "Blue",
-            Self::LinkedRgb => "Red, Green & Blue",
+            Self::LinkedRgb => "RGB linked",
             Self::Hue => "Hue",
             Self::Saturation => "Saturation",
             Self::Value => "Value",
-            Self::LinkedSaturationValue => "Saturation & Value",
+            Self::LinkedSaturationValue => "S + V linked",
         }
     }
 
@@ -81,8 +80,6 @@ impl ThresholdEditTarget {
 pub enum ThresholdEncoding {
     #[default]
     EncodedSrgb,
-    /// Version-2 projects quantized linear sRGB. New work must not select this.
-    LinearSrgbLegacy,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -101,6 +98,25 @@ pub struct ComponentQuantizer {
 }
 
 impl ComponentQuantizer {
+    /// Equal-width scalar input bands with linearly spaced endpoint output levels.
+    pub fn automatic_scalar(bands: usize) -> Self {
+        let bands = bands.clamp(2, 32);
+        Self {
+            enabled: true,
+            boundaries: (1..bands)
+                .map(|index| index as f32 / bands as f32)
+                .collect(),
+            outputs: (0..bands)
+                .map(|index| index as f32 / (bands - 1) as f32)
+                .collect(),
+        }
+    }
+
+    /// Equal circular input bands whose output levels sit at the center of each interval.
+    pub fn automatic_circular(bands: usize) -> Self {
+        Self::evenly_spaced(bands)
+    }
+
     pub fn evenly_spaced(bands: usize) -> Self {
         let bands = bands.clamp(2, 32);
         Self {
@@ -155,6 +171,7 @@ impl ComponentQuantizer {
 pub struct RgbThresholdState {
     pub link: LinkPolicy,
     pub encoding: ThresholdEncoding,
+    pub locks: [bool; 3],
     pub components: [ComponentQuantizer; 3],
 }
 
@@ -163,6 +180,7 @@ pub struct RgbThresholdState {
 pub struct HsvThresholdState {
     pub sv_link: LinkPolicy,
     pub hue_origin_degrees: f32,
+    pub locks: [bool; 3],
     pub hue: ComponentQuantizer,
     pub saturation: ComponentQuantizer,
     pub value: ComponentQuantizer,
@@ -175,7 +193,7 @@ pub struct ThresholdState {
     pub rgb_state: RgbThresholdState,
     pub hsv_state: HsvThresholdState,
     pub alpha_policy: AlphaPolicy,
-    /// Reserved for a later UI/processing slice; version 3 persists the intent.
+    /// Global pre-engine smoothing shared by Threshold and Voronoi.
     pub input_smoothing: f32,
 }
 
@@ -187,11 +205,13 @@ impl Default for ThresholdState {
             rgb_state: RgbThresholdState {
                 link: LinkPolicy::Linked,
                 encoding: ThresholdEncoding::EncodedSrgb,
+                locks: [false; 3],
                 components: [quantizer.clone(), quantizer.clone(), quantizer.clone()],
             },
             hsv_state: HsvThresholdState {
                 sv_link: LinkPolicy::Linked,
                 hue_origin_degrees: 0.0,
+                locks: [false; 3],
                 hue: quantizer.clone(),
                 saturation: quantizer.clone(),
                 value: quantizer,
@@ -205,7 +225,12 @@ impl Default for ThresholdState {
 impl ThresholdState {
     pub fn edit_targets(&self) -> Vec<ThresholdEditTarget> {
         match (self.active_space, self.active_link()) {
-            (ThresholdSpace::Rgb, LinkPolicy::Linked) => vec![ThresholdEditTarget::LinkedRgb],
+            (ThresholdSpace::Rgb, LinkPolicy::Linked) => vec![
+                ThresholdEditTarget::LinkedRgb,
+                ThresholdEditTarget::Red,
+                ThresholdEditTarget::Green,
+                ThresholdEditTarget::Blue,
+            ],
             (ThresholdSpace::Rgb, LinkPolicy::Independent) => vec![
                 ThresholdEditTarget::Red,
                 ThresholdEditTarget::Green,
@@ -214,6 +239,8 @@ impl ThresholdState {
             (ThresholdSpace::Hsv, LinkPolicy::Linked) => vec![
                 ThresholdEditTarget::Hue,
                 ThresholdEditTarget::LinkedSaturationValue,
+                ThresholdEditTarget::Saturation,
+                ThresholdEditTarget::Value,
             ],
             (ThresholdSpace::Hsv, LinkPolicy::Independent) => vec![
                 ThresholdEditTarget::Hue,
@@ -237,15 +264,19 @@ impl ThresholdState {
         }
         match previous {
             ThresholdEditTarget::Red | ThresholdEditTarget::Green | ThresholdEditTarget::Blue => {
-                targets
-                    .iter()
-                    .copied()
-                    .find(|target| *target == ThresholdEditTarget::LinkedRgb)
+                targets.iter().copied().find(|target| {
+                    matches!(
+                        target,
+                        ThresholdEditTarget::Red
+                            | ThresholdEditTarget::Green
+                            | ThresholdEditTarget::Blue
+                    )
+                })
             }
             ThresholdEditTarget::Saturation | ThresholdEditTarget::Value => targets
                 .iter()
                 .copied()
-                .find(|target| *target == ThresholdEditTarget::LinkedSaturationValue),
+                .find(|target| *target == ThresholdEditTarget::Saturation),
             ThresholdEditTarget::LinkedSaturationValue => targets
                 .iter()
                 .copied()
@@ -274,7 +305,64 @@ impl ThresholdState {
         }
     }
 
-    pub fn set_edit_quantizer(&mut self, target: ThresholdEditTarget, edited: ComponentQuantizer) {
+    pub fn target_index(target: ThresholdEditTarget) -> usize {
+        match target {
+            ThresholdEditTarget::Red
+            | ThresholdEditTarget::Hue
+            | ThresholdEditTarget::LinkedRgb => 0,
+            ThresholdEditTarget::Green
+            | ThresholdEditTarget::Saturation
+            | ThresholdEditTarget::LinkedSaturationValue => 1,
+            ThresholdEditTarget::Blue | ThresholdEditTarget::Value => 2,
+        }
+    }
+
+    pub fn is_locked(&self, target: ThresholdEditTarget) -> bool {
+        let index = Self::target_index(target);
+        match target {
+            ThresholdEditTarget::Red
+            | ThresholdEditTarget::Green
+            | ThresholdEditTarget::Blue
+            | ThresholdEditTarget::LinkedRgb => self.rgb_state.locks[index],
+            _ => self.hsv_state.locks[index],
+        }
+    }
+
+    pub fn set_locked(&mut self, target: ThresholdEditTarget, locked: bool) -> bool {
+        let index = Self::target_index(target);
+        let value = match target {
+            ThresholdEditTarget::Red
+            | ThresholdEditTarget::Green
+            | ThresholdEditTarget::Blue
+            | ThresholdEditTarget::LinkedRgb => &mut self.rgb_state.locks[index],
+            _ => &mut self.hsv_state.locks[index],
+        };
+        if *value == locked {
+            false
+        } else {
+            *value = locked;
+            true
+        }
+    }
+
+    pub fn set_hue_origin_degrees(&mut self, degrees: f32) -> bool {
+        if self.hsv_state.locks[0] || !degrees.is_finite() {
+            return false;
+        }
+        let canonical = degrees.rem_euclid(360.0);
+        if self.hsv_state.hue_origin_degrees == canonical {
+            false
+        } else {
+            self.hsv_state.hue_origin_degrees = canonical;
+            true
+        }
+    }
+
+    pub fn set_edit_quantizer(
+        &mut self,
+        target: ThresholdEditTarget,
+        edited: ComponentQuantizer,
+    ) -> bool {
         match target {
             ThresholdEditTarget::Red | ThresholdEditTarget::LinkedRgb => {
                 self.set_rgb_component(0, edited)
@@ -288,9 +376,25 @@ impl ThresholdState {
             ThresholdEditTarget::Value => self.set_hsv_component(2, edited),
         }
     }
+
+    /// Restore the selected component to its automatic baseline without changing its Band count.
+    /// Ordinary component setters retain Process and apply the active Link policy while locks
+    /// remain authoritative.
+    pub fn auto_map(&mut self, target: ThresholdEditTarget) -> bool {
+        if self.is_locked(target) {
+            return false;
+        }
+        let bands = self.edit_quantizer(target).outputs.len();
+        let automatic = if target.is_hue() {
+            ComponentQuantizer::automatic_circular(bands)
+        } else {
+            ComponentQuantizer::automatic_scalar(bands)
+        };
+        self.set_edit_quantizer(target, automatic)
+    }
     pub fn validate(&self) -> Result<(), String> {
-        if !self.input_smoothing.is_finite() || self.input_smoothing < 0.0 {
-            return Err("Input smoothing must be a finite non-negative value".into());
+        if !self.input_smoothing.is_finite() || !(0.0..=10.0).contains(&self.input_smoothing) {
+            return Err("Smooth source must be a finite value from 0 to 10".into());
         }
         if !self.hsv_state.hue_origin_degrees.is_finite() {
             return Err("Hue origin must be finite".into());
@@ -307,22 +411,35 @@ impl ThresholdState {
     }
 
     /// Propagate an edit according to Link controls, without copying Process/Bypass flags.
-    pub fn set_rgb_component(&mut self, index: usize, edited: ComponentQuantizer) {
+    pub fn set_rgb_component(&mut self, index: usize, edited: ComponentQuantizer) -> bool {
+        if self.rgb_state.locks[index] {
+            return false;
+        }
+        let before = self.rgb_state.components.clone();
         let enabled = self.rgb_state.components[index].enabled;
         self.rgb_state.components[index] = edited.clone();
         self.rgb_state.components[index].enabled = enabled;
         if self.rgb_state.link == LinkPolicy::Linked {
             for (other_index, component) in self.rgb_state.components.iter_mut().enumerate() {
-                if other_index != index {
+                if other_index != index && !self.rgb_state.locks[other_index] {
                     let other_enabled = component.enabled;
                     *component = edited.clone();
                     component.enabled = other_enabled;
                 }
             }
         }
+        self.rgb_state.components != before
     }
 
-    pub fn set_hsv_component(&mut self, index: usize, edited: ComponentQuantizer) {
+    pub fn set_hsv_component(&mut self, index: usize, edited: ComponentQuantizer) -> bool {
+        if self.hsv_state.locks[index] {
+            return false;
+        }
+        let before = [
+            self.hsv_state.hue.clone(),
+            self.hsv_state.saturation.clone(),
+            self.hsv_state.value.clone(),
+        ];
         match index {
             0 => {
                 let enabled = self.hsv_state.hue.enabled;
@@ -338,7 +455,9 @@ impl ThresholdState {
                 let enabled = target.enabled;
                 *target = edited.clone();
                 target.enabled = enabled;
-                if self.hsv_state.sv_link == LinkPolicy::Linked {
+                if self.hsv_state.sv_link == LinkPolicy::Linked
+                    && !self.hsv_state.locks[if index == 1 { 2 } else { 1 }]
+                {
                     let other = if index == 1 {
                         &mut self.hsv_state.value
                     } else {
@@ -351,6 +470,171 @@ impl ThresholdState {
             }
             _ => unreachable!("HSV component index"),
         }
+        before
+            != [
+                self.hsv_state.hue.clone(),
+                self.hsv_state.saturation.clone(),
+                self.hsv_state.value.clone(),
+            ]
+    }
+
+    /// Copy the selected mapping to its synchronization peers. Process and lock state remain
+    /// independent. Returns `(copied, locked_destinations_skipped)`.
+    pub fn sync_from(&mut self, target: ThresholdEditTarget) -> (usize, usize) {
+        let source = self.edit_quantizer(target);
+        let source_index = Self::target_index(target);
+        let mut copied = 0;
+        let mut skipped = 0;
+        match target {
+            ThresholdEditTarget::Red | ThresholdEditTarget::Green | ThresholdEditTarget::Blue => {
+                for index in 0..3 {
+                    if index == source_index {
+                        continue;
+                    }
+                    if self.rgb_state.locks[index] {
+                        skipped += 1;
+                        continue;
+                    }
+                    let enabled = self.rgb_state.components[index].enabled;
+                    self.rgb_state.components[index] = source.clone();
+                    self.rgb_state.components[index].enabled = enabled;
+                    copied += 1;
+                }
+            }
+            ThresholdEditTarget::Saturation | ThresholdEditTarget::Value => {
+                let index = if source_index == 1 { 2 } else { 1 };
+                if self.hsv_state.locks[index] {
+                    skipped = 1;
+                } else {
+                    let destination = if index == 1 {
+                        &mut self.hsv_state.saturation
+                    } else {
+                        &mut self.hsv_state.value
+                    };
+                    let enabled = destination.enabled;
+                    *destination = source;
+                    destination.enabled = enabled;
+                    copied = 1;
+                }
+            }
+            ThresholdEditTarget::Hue
+            | ThresholdEditTarget::LinkedRgb
+            | ThresholdEditTarget::LinkedSaturationValue => {}
+        }
+        (copied, skipped)
+    }
+}
+
+impl ComponentQuantizer {
+    /// Split a band without changing the transfer function: both halves retain the old output.
+    pub fn split_band(&mut self, band: usize) -> bool {
+        if self.outputs.len() >= 32 || band >= self.outputs.len() {
+            return false;
+        }
+        let lower = if band == 0 {
+            0.0
+        } else {
+            self.boundaries[band - 1]
+        };
+        let upper = self.boundaries.get(band).copied().unwrap_or(1.0);
+        self.boundaries.insert(band, (lower + upper) / 2.0);
+        self.outputs.insert(band + 1, self.outputs[band]);
+        true
+    }
+
+    pub fn split_widest_band(&mut self) -> bool {
+        let band = (0..self.outputs.len())
+            .max_by(|left, right| {
+                self.band_width(*left)
+                    .total_cmp(&self.band_width(*right))
+                    .then_with(|| right.cmp(left))
+            })
+            .unwrap_or(0);
+        self.split_band(band)
+    }
+
+    fn band_width(&self, band: usize) -> f32 {
+        let lower = if band == 0 {
+            0.0
+        } else {
+            self.boundaries[band - 1]
+        };
+        let upper = self.boundaries.get(band).copied().unwrap_or(1.0);
+        upper - lower
+    }
+
+    /// Remove a boundary and merge its adjacent bands. The larger interval's output wins; an
+    /// exact width tie keeps the lower interval's output.
+    pub fn remove_boundary(&mut self, boundary: usize) -> bool {
+        if self.outputs.len() <= 2 || boundary >= self.boundaries.len() {
+            return false;
+        }
+        let lower_width = self.band_width(boundary);
+        let upper_width = self.band_width(boundary + 1);
+        self.boundaries.remove(boundary);
+        if lower_width >= upper_width {
+            self.outputs.remove(boundary + 1);
+        } else {
+            self.outputs.remove(boundary);
+        }
+        true
+    }
+
+    /// Merge the adjacent pair with the smallest output error, then the narrowest combined
+    /// interval, then the lowest boundary index.
+    pub fn remove_least_error_boundary(&mut self) -> bool {
+        let Some(boundary) = (0..self.boundaries.len()).min_by(|left, right| {
+            let left_error = (self.outputs[*left] - self.outputs[*left + 1]).abs();
+            let right_error = (self.outputs[*right] - self.outputs[*right + 1]).abs();
+            left_error
+                .total_cmp(&right_error)
+                .then_with(|| {
+                    (self.band_width(*left) + self.band_width(*left + 1))
+                        .total_cmp(&(self.band_width(*right) + self.band_width(*right + 1)))
+                })
+                .then_with(|| left.cmp(right))
+        }) else {
+            return false;
+        };
+        self.remove_boundary(boundary)
+    }
+
+    pub fn resize_preserving_mapping(
+        &mut self,
+        bands: usize,
+        selected_band: Option<usize>,
+        selected_boundary: Option<usize>,
+    ) -> bool {
+        let bands = bands.clamp(2, 32);
+        if bands == self.outputs.len() {
+            return false;
+        }
+        let mut changed = false;
+        let mut first = true;
+        while self.outputs.len() < bands {
+            changed |= if first {
+                selected_band
+                    .filter(|band| *band < self.outputs.len())
+                    .is_some_and(|band| self.split_band(band))
+                    || self.split_widest_band()
+            } else {
+                self.split_widest_band()
+            };
+            first = false;
+        }
+        first = true;
+        while self.outputs.len() > bands {
+            changed |= if first {
+                selected_boundary
+                    .filter(|boundary| *boundary < self.boundaries.len())
+                    .is_some_and(|boundary| self.remove_boundary(boundary))
+                    || self.remove_least_error_boundary()
+            } else {
+                self.remove_least_error_boundary()
+            };
+            first = false;
+        }
+        changed
     }
 }
 
@@ -466,9 +750,7 @@ pub struct VoronoiSite {
     pub source_color: [f32; 4],
     pub target_color: [f32; 3],
     pub influence: f64,
-    #[serde(default)]
     pub locked: bool,
-    #[serde(default)]
     pub position: Option<[f64; 2]>,
     pub size: SampleSize,
 }
@@ -478,7 +760,6 @@ pub struct VoronoiSite {
 pub struct VoronoiState {
     pub sites: Vec<VoronoiSite>,
     pub next_site_id: u64,
-    #[serde(default)]
     pub matching: VoronoiMatching,
 }
 
@@ -486,6 +767,7 @@ pub struct VoronoiState {
 pub enum VoronoiMatching {
     #[default]
     Perceptual,
+    Okhsl,
     Rgb,
     Hsv,
 }
@@ -778,10 +1060,11 @@ impl Recipe {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ProfileInterpretation {
     UntaggedAssumedSrgb,
-    EmbeddedProfileNotConverted,
+    EmbeddedProfileConvertedToSrgb,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SourceInterpretation {
     pub original_format: String,
     pub profile: ProfileInterpretation,
@@ -790,6 +1073,7 @@ pub struct SourceInterpretation {
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ExportDefaults {
     pub format: String,
     pub depth: String,
@@ -799,6 +1083,20 @@ impl Default for ExportDefaults {
         Self {
             format: "PNG".into(),
             depth: "16-bit integer per channel".into(),
+        }
+    }
+}
+
+impl ExportDefaults {
+    pub fn validate(&self) -> Result<(), String> {
+        match (self.format.as_str(), self.depth.as_str()) {
+            ("PNG", "8-bit integer per channel")
+            | ("PNG", "16-bit integer per channel")
+            | ("OpenEXR", "32-bit float per channel") => Ok(()),
+            _ => Err(format!(
+                "unsupported export defaults: {} / {}",
+                self.format, self.depth
+            )),
         }
     }
 }

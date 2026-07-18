@@ -15,6 +15,7 @@ glib = "0.21"
 gtk = { package = "gtk4", version = "0.10", features = ["v4_12"] }
 adw = { package = "libadwaita", version = "0.8", features = ["v1_5"] }
 image = { version = "0.25", default-features = false, features = ["bmp", "exr", "gif", "jpeg", "png", "tiff", "webp"] }
+moxcms = "0.8.1"
 png = "0.18"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
