@@ -5,6 +5,11 @@ use std::time::Instant;
 
 use super::*;
 
+/// Release the registry borrow before an action can rebuild or close its widget.
+fn cloned_control<T: Clone>(control: &RefCell<Option<T>>) -> Option<T> {
+    control.borrow().clone()
+}
+
 #[derive(Clone)]
 struct AuditLog {
     scenario: String,
@@ -106,6 +111,20 @@ pub(super) fn maybe_start_ui_audit(ui: &Rc<Ui>, state: &Rc<RefCell<State>>) {
 
     let initial_generation = state.borrow().scheduler.current_generation();
     let initial_history = state.borrow().session.undo_len();
+    let initial_colors = state
+        .borrow()
+        .session
+        .document()
+        .map(|document| {
+            document
+                .recipe
+                .voronoi
+                .sites
+                .iter()
+                .map(|site| (site.source_color, site.target_color))
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
     let action_ui = ui.clone();
     let action_state = state.clone();
     let action_log = log.clone();
@@ -126,10 +145,7 @@ pub(super) fn maybe_start_ui_audit(ui: &Rc<Ui>, state: &Rc<RefCell<State>>) {
             action_ui.voronoi_matching.set_selected(2);
             let no_op = action_state.borrow().scheduler.current_generation() == no_op_generation
                 && action_state.borrow().session.undo_len() == no_op_history;
-            let adjusted = action_ui
-                .audit_site_influence
-                .borrow()
-                .clone()
+            let adjusted = cloned_control(&action_ui.audit_site_influence)
                 .is_some_and(|influence| {
                     let previous = influence.value();
                     influence.set_value(if previous < 3.9 {
@@ -139,10 +155,7 @@ pub(super) fn maybe_start_ui_audit(ui: &Rc<Ui>, state: &Rc<RefCell<State>>) {
                     });
                     influence.value() != previous
                 });
-            let expanded = action_ui
-                .audit_other_site_expander
-                .borrow()
-                .clone()
+            let expanded = cloned_control(&action_ui.audit_other_site_expander)
                 .is_some_and(|row| {
                     row.set_expanded(true);
                     row.is_expanded()
@@ -154,38 +167,29 @@ pub(super) fn maybe_start_ui_audit(ui: &Rc<Ui>, state: &Rc<RefCell<State>>) {
                 let site = document.recipe.voronoi.site(selected_before?)?;
                 Some((site.source_color, site.target_color))
             });
-            let cancelled_draft = action_ui
-                .audit_site_source
-                .borrow()
-                .clone()
+            let cancelled_draft = cloned_control(&action_ui.audit_site_source)
                 .is_some_and(|button| {
                     button.emit_clicked();
-                    if let Some(entry) = action_ui.audit_picker_hex.borrow().clone() {
+                    if let Some(entry) = cloned_control(&action_ui.audit_picker_hex) {
                         entry.set_text("#E85D04");
                         entry.emit_activate();
                     }
-                    if let Some(cancel) = action_ui.audit_picker_cancel.borrow().clone() {
+                    if let Some(cancel) = cloned_control(&action_ui.audit_picker_cancel) {
                         cancel.emit_clicked();
                     }
                     action_state.borrow().session.undo_len() == initial_history
                 });
-            let opened = action_ui
-                .audit_site_target
-                .borrow()
-                .clone()
+            let opened = cloned_control(&action_ui.audit_site_target)
                 .is_some_and(|button| {
                     button.emit_clicked();
                     action_state.borrow().picker_visible
                 });
-            let edited = action_ui.audit_picker_hex.borrow().clone().is_some_and(|entry| {
+            let edited = cloned_control(&action_ui.audit_picker_hex).is_some_and(|entry| {
                 entry.set_text("#2F80ED");
                 entry.emit_activate();
                 true
             });
-            let committed = action_ui
-                .audit_picker_select
-                .borrow()
-                .clone()
+            let committed = cloned_control(&action_ui.audit_picker_select)
                 .is_some_and(|button| {
                     button.emit_clicked();
                     true
@@ -210,7 +214,7 @@ pub(super) fn maybe_start_ui_audit(ui: &Rc<Ui>, state: &Rc<RefCell<State>>) {
             if applied {
                 action_ui.preset_dropdown.set_selected(1);
                 action_ui.preset_save.emit_clicked();
-                if let Some(cancel) = action_ui.audit_preset_cancel.borrow().clone() {
+                if let Some(cancel) = cloned_control(&action_ui.audit_preset_cancel) {
                     cancel.emit_clicked();
                 }
             }
@@ -274,7 +278,8 @@ pub(super) fn maybe_start_ui_audit(ui: &Rc<Ui>, state: &Rc<RefCell<State>>) {
                         .voronoi
                         .sites
                         .iter()
-                        .any(|site| site.source_color[..3] != site.target_color)
+                        .map(|site| (site.source_color, site.target_color))
+                        .eq(initial_colors.iter().copied())
             }) && current.scheduler.current_generation() > initial_generation
                 && current.session.undo_len() > initial_history
                 && assert_ui.audit_site_source.borrow().is_some()

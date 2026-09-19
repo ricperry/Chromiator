@@ -1,0 +1,129 @@
+{
+  "version": 3,
+  "name": "Smudged Graphite",
+  "processing": {
+    "preprocessing": {
+      "input_smoothing": 5.0
+    },
+    "voronoi": {
+      "sites": [
+        {
+          "id": 1,
+          "order": 1,
+          "source_color": [
+            0.008023193,
+            0.008023193,
+            0.008023193,
+            1.0
+          ],
+          "target_color": [
+            0.008568126,
+            0.008568126,
+            0.008568126
+          ],
+          "influence": 0.0,
+          "locked": false,
+          "position": null,
+          "size": "Point"
+        },
+        {
+          "id": 2,
+          "order": 2,
+          "source_color": [
+            0.08021982,
+            0.08021982,
+            0.08021982,
+            1.0
+          ],
+          "target_color": [
+            0.064803265,
+            0.064803265,
+            0.064803265
+          ],
+          "influence": 0.0,
+          "locked": false,
+          "position": null,
+          "size": "Point"
+        },
+        {
+          "id": 3,
+          "order": 3,
+          "source_color": [
+            0.25015828,
+            0.25015828,
+            0.25015828,
+            1.0
+          ],
+          "target_color": [
+            0.25015828,
+            0.25015828,
+            0.25015828
+          ],
+          "influence": 0.0,
+          "locked": false,
+          "position": null,
+          "size": "Point"
+        },
+        {
+          "id": 4,
+          "order": 4,
+          "source_color": [
+            0.5028865,
+            0.5028865,
+            0.5028865,
+            1.0
+          ],
+          "target_color": [
+            0.5583404,
+            0.5583404,
+            0.5583404
+          ],
+          "influence": 0.0,
+          "locked": false,
+          "position": null,
+          "size": "Point"
+        },
+        {
+          "id": 5,
+          "order": 5,
+          "source_color": [
+            0.8549926,
+            0.8549926,
+            0.8549926,
+            1.0
+          ],
+          "target_color": [
+            0.9386857,
+            0.9386857,
+            0.9386857
+          ],
+          "influence": 0.0,
+          "locked": false,
+          "position": null,
+          "size": "Point"
+        }
+      ],
+      "next_site_id": 6,
+      "matching": "Perceptual",
+      "transition": {
+        "start": 0.25,
+        "midpoint": 0.5,
+        "end": 0.75
+      }
+    },
+    "steps": [
+      {
+        "working_space": "Oklch",
+        "components": "Hue",
+        "operation": {
+          "RotateHue": {
+            "degrees": 0.0
+          }
+        },
+        "pass_through": "PreserveUnselectedComponents",
+        "alpha": "PassThroughStraight",
+        "conversion_back": "KeepLinearSrgbF32"
+      }
+    ]
+  }
+}

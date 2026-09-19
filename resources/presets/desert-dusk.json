@@ -1,0 +1,129 @@
+{
+  "version": 3,
+  "name": "Desert Dusk",
+  "processing": {
+    "preprocessing": {
+      "input_smoothing": 0.0
+    },
+    "voronoi": {
+      "sites": [
+        {
+          "id": 1,
+          "order": 1,
+          "source_color": [
+            0.008023193,
+            0.0051815165,
+            0.012286488,
+            1.0
+          ],
+          "target_color": [
+            0.017641954,
+            0.010960094,
+            0.02842604
+          ],
+          "influence": 0.15,
+          "locked": false,
+          "position": null,
+          "size": "Point"
+        },
+        {
+          "id": 2,
+          "order": 2,
+          "source_color": [
+            0.12477182,
+            0.04231141,
+            0.070360094,
+            1.0
+          ],
+          "target_color": [
+            0.16202937,
+            0.051269457,
+            0.10946171
+          ],
+          "influence": 0.0,
+          "locked": false,
+          "position": null,
+          "size": "Point"
+        },
+        {
+          "id": 3,
+          "order": 3,
+          "source_color": [
+            0.3662526,
+            0.14412847,
+            0.07818742,
+            1.0
+          ],
+          "target_color": [
+            0.6444797,
+            0.19806932,
+            0.09758735
+          ],
+          "influence": 0.0,
+          "locked": false,
+          "position": null,
+          "size": "Point"
+        },
+        {
+          "id": 4,
+          "order": 4,
+          "source_color": [
+            0.6795425,
+            0.43965718,
+            0.14412847,
+            1.0
+          ],
+          "target_color": [
+            0.8713671,
+            0.57112485,
+            0.17788842
+          ],
+          "influence": 0.0,
+          "locked": false,
+          "position": null,
+          "size": "Point"
+        },
+        {
+          "id": 5,
+          "order": 5,
+          "source_color": [
+            0.8962694,
+            0.80695224,
+            0.63759685,
+            1.0
+          ],
+          "target_color": [
+            1.0,
+            0.8713671,
+            0.6172066
+          ],
+          "influence": 0.1,
+          "locked": false,
+          "position": null,
+          "size": "Point"
+        }
+      ],
+      "next_site_id": 6,
+      "matching": "Perceptual",
+      "transition": {
+        "start": 0.0,
+        "midpoint": 0.5,
+        "end": 1.0
+      }
+    },
+    "steps": [
+      {
+        "working_space": "Oklch",
+        "components": "Hue",
+        "operation": {
+          "RotateHue": {
+            "degrees": 0.0
+          }
+        },
+        "pass_through": "PreserveUnselectedComponents",
+        "alpha": "PassThroughStraight",
+        "conversion_back": "KeepLinearSrgbF32"
+      }
+    ]
+  }
+}

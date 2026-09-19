@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>io.github.chromiator.Chromiator</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>GPL-3.0-or-later</project_license>
+  <name>Chromiator</name>
+  <summary>Partition and remap perceptual color spaces</summary>
+  <description>
+    <p>Chromiator is an artist-directed color remapping application. Editable Voronoi sites simplify, segment, recolor, and blend an image's color structure while preserving its spatial structure.</p>
+    <p>Adjust independent source and target colors, choose matching and blending spaces, and explore built-in or personal presets.</p>
+  </description>
+  <launchable type="desktop-id">io.github.chromiator.Chromiator.desktop</launchable>
+  <url type="homepage">https://github.com/ricperry/Chromiator</url>
+  <url type="bugtracker">https://github.com/ricperry/Chromiator/issues</url>
+  <content_rating type="oars-1.1"/>
+</component>

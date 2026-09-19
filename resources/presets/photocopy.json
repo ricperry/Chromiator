@@ -1,0 +1,72 @@
+{
+  "version": 3,
+  "name": "Photocopy",
+  "processing": {
+    "preprocessing": {
+      "input_smoothing": 0.0
+    },
+    "voronoi": {
+      "sites": [
+        {
+          "id": 1,
+          "order": 1,
+          "source_color": [
+            0.1115995,
+            0.1115995,
+            0.1115995,
+            1.0
+          ],
+          "target_color": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "influence": 0.0,
+          "locked": false,
+          "position": null,
+          "size": "Point"
+        },
+        {
+          "id": 2,
+          "order": 2,
+          "source_color": [
+            0.28177792,
+            0.28177792,
+            0.28177792,
+            1.0
+          ],
+          "target_color": [
+            0.9559733,
+            0.9559733,
+            0.9559733
+          ],
+          "influence": 0.0,
+          "locked": false,
+          "position": null,
+          "size": "Point"
+        }
+      ],
+      "next_site_id": 3,
+      "matching": "Perceptual",
+      "transition": {
+        "start": 0.495,
+        "midpoint": 0.5,
+        "end": 0.505
+      }
+    },
+    "steps": [
+      {
+        "working_space": "Oklch",
+        "components": "Hue",
+        "operation": {
+          "RotateHue": {
+            "degrees": 0.0
+          }
+        },
+        "pass_through": "PreserveUnselectedComponents",
+        "alpha": "PassThroughStraight",
+        "conversion_back": "KeepLinearSrgbF32"
+      }
+    ]
+  }
+}

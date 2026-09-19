@@ -1,0 +1,72 @@
+{
+  "version": 3,
+  "name": "Mimeograph",
+  "processing": {
+    "preprocessing": {
+      "input_smoothing": 0.0
+    },
+    "voronoi": {
+      "sites": [
+        {
+          "id": 1,
+          "order": 1,
+          "source_color": [
+            0.078606375,
+            0.078606375,
+            0.078606375,
+            1.0
+          ],
+          "target_color": [
+            0.014416648,
+            0.008793519,
+            0.062163796
+          ],
+          "influence": 0.0,
+          "locked": false,
+          "position": null,
+          "size": "Point"
+        },
+        {
+          "id": 2,
+          "order": 2,
+          "source_color": [
+            0.32473764,
+            0.32473764,
+            0.32473764,
+            1.0
+          ],
+          "target_color": [
+            0.8962694,
+            0.8549926,
+            0.7230551
+          ],
+          "influence": 0.0,
+          "locked": false,
+          "position": null,
+          "size": "Point"
+        }
+      ],
+      "next_site_id": 3,
+      "matching": "Perceptual",
+      "transition": {
+        "start": 0.485,
+        "midpoint": 0.5,
+        "end": 0.515
+      }
+    },
+    "steps": [
+      {
+        "working_space": "Oklch",
+        "components": "Hue",
+        "operation": {
+          "RotateHue": {
+            "degrees": 0.0
+          }
+        },
+        "pass_through": "PreserveUnselectedComponents",
+        "alpha": "PassThroughStraight",
+        "conversion_back": "KeepLinearSrgbF32"
+      }
+    ]
+  }
+}

@@ -1441,9 +1441,6 @@ fn present_save_preset(ui: &Rc<Ui>, state: &Rc<RefCell<State>>) {
     save.add_css_class("suggested-action");
     header.pack_start(&cancel);
     header.pack_end(&save);
-    let dialog_root = gtk::Box::new(gtk::Orientation::Vertical, 0);
-    dialog_root.append(&header);
-    dialog_root.append(&form);
     let dialog = gtk::Window::builder()
         .title("Save Current Preset")
         .default_width(440)
@@ -1451,8 +1448,9 @@ fn present_save_preset(ui: &Rc<Ui>, state: &Rc<RefCell<State>>) {
         .transient_for(&ui.window)
         .modal(true)
         .destroy_with_parent(true)
-        .child(&dialog_root)
+        .child(&form)
         .build();
+    dialog.set_titlebar(Some(&header));
     *ui.audit_preset_name.borrow_mut() = Some(name.clone());
     *ui.audit_preset_cancel.borrow_mut() = Some(cancel.clone());
     *ui.audit_preset_save.borrow_mut() = Some(save.clone());
@@ -1913,6 +1911,20 @@ mod tests {
                 "Blueprint",
                 "Arcade Four",
                 "Night Neon",
+                "Graphite",
+                "Sepia Press",
+                "Teal and Tangerine",
+                "Moss and Clay",
+                "Primary Print",
+                "Soft Pastel",
+                "Mimeograph",
+                "Photocopy",
+                "Carbon Copy",
+                "Old Newsprint",
+                "Two-Color Press",
+                "Risograph",
+                "Smudged Graphite",
+                "Watercolor",
                 "My Look",
             ]
         );

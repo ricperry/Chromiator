@@ -1,0 +1,129 @@
+{
+  "version": 3,
+  "name": "Arcade Four",
+  "processing": {
+    "preprocessing": {
+      "input_smoothing": 3.0
+    },
+    "voronoi": {
+      "sites": [
+        {
+          "id": 1,
+          "order": 1,
+          "source_color": [
+            0.0033465358,
+            0.0021246888,
+            0.0051815165,
+            1.0
+          ],
+          "target_color": [
+            0.007499032,
+            0.006048833,
+            0.011612245
+          ],
+          "influence": 0.15,
+          "locked": false,
+          "position": null,
+          "size": "Point"
+        },
+        {
+          "id": 2,
+          "order": 2,
+          "source_color": [
+            0.2541521,
+            0.019382361,
+            0.046665087,
+            1.0
+          ],
+          "target_color": [
+            1.0,
+            0.07818742,
+            0.14126323
+          ],
+          "influence": 0.0,
+          "locked": false,
+          "position": null,
+          "size": "Point"
+        },
+        {
+          "id": 3,
+          "order": 3,
+          "source_color": [
+            0.02121901,
+            0.20155625,
+            0.1682694,
+            1.0
+          ],
+          "target_color": [
+            4.1633363e-16,
+            0.6869162,
+            0.52988267
+          ],
+          "influence": 0.0,
+          "locked": false,
+          "position": null,
+          "size": "Point"
+        },
+        {
+          "id": 4,
+          "order": 4,
+          "source_color": [
+            0.049706567,
+            0.035601314,
+            0.20507874,
+            1.0
+          ],
+          "target_color": [
+            0.19088198,
+            0.10708525,
+            1.0
+          ],
+          "influence": 0.0,
+          "locked": false,
+          "position": null,
+          "size": "Point"
+        },
+        {
+          "id": 5,
+          "order": 5,
+          "source_color": [
+            0.67244315,
+            0.4677838,
+            0.14412847,
+            1.0
+          ],
+          "target_color": [
+            1.0,
+            0.63759685,
+            0.13286832
+          ],
+          "influence": 0.0,
+          "locked": false,
+          "position": null,
+          "size": "Point"
+        }
+      ],
+      "next_site_id": 6,
+      "matching": "Perceptual",
+      "transition": {
+        "start": 0.5,
+        "midpoint": 0.5,
+        "end": 0.5
+      }
+    },
+    "steps": [
+      {
+        "working_space": "Oklch",
+        "components": "Hue",
+        "operation": {
+          "RotateHue": {
+            "degrees": 0.0
+          }
+        },
+        "pass_through": "PreserveUnselectedComponents",
+        "alpha": "PassThroughStraight",
+        "conversion_back": "KeepLinearSrgbF32"
+      }
+    ]
+  }
+}

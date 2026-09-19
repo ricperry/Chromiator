@@ -75,7 +75,7 @@ fn gaussian_smoothing_zero_constant_impulse_alpha_and_cancellation() {
 
 #[test]
 fn built_in_looks_are_voronoi_only_valid_distinct_and_idempotent() {
-    assert_eq!(STARTER_LOOKS.len(), 5);
+    assert_eq!(STARTER_LOOKS.len(), 19);
     let mut ids = std::collections::BTreeSet::new();
     let mut names = std::collections::BTreeSet::new();
     let source = chromiator::example::spectrum_document().unwrap().source;
@@ -88,7 +88,7 @@ fn built_in_looks_are_voronoi_only_valid_distinct_and_idempotent() {
         );
         let recipe = recipe_for_starter_look(look);
         recipe.validate().unwrap();
-        assert!(recipe.voronoi.sites.len() >= 4);
+        assert!(recipe.voronoi.sites.len() >= 2);
         assert!(
             recipe
                 .voronoi

@@ -1,0 +1,281 @@
+{
+  "version": 3,
+  "name": "Watercolor",
+  "processing": {
+    "preprocessing": {
+      "input_smoothing": 10.0
+    },
+    "voronoi": {
+      "sites": [
+        {
+          "id": 6,
+          "order": 6,
+          "source_color": [
+            0.5457246,
+            0.000303527,
+            0.000910581,
+            1.0
+          ],
+          "target_color": [
+            0.5457246,
+            0.000303527,
+            0.000910581
+          ],
+          "influence": 0.0,
+          "locked": false,
+          "position": null,
+          "size": "Point"
+        },
+        {
+          "id": 7,
+          "order": 7,
+          "source_color": [
+            0.0,
+            0.02121901,
+            0.66538733,
+            1.0
+          ],
+          "target_color": [
+            0.0,
+            0.02121901,
+            0.66538733
+          ],
+          "influence": 0.0,
+          "locked": false,
+          "position": null,
+          "size": "Point"
+        },
+        {
+          "id": 8,
+          "order": 8,
+          "source_color": [
+            0.9911022,
+            0.62396044,
+            0.000607054,
+            1.0
+          ],
+          "target_color": [
+            0.9911022,
+            0.62396044,
+            0.000607054
+          ],
+          "influence": 0.0,
+          "locked": false,
+          "position": null,
+          "size": "Point"
+        },
+        {
+          "id": 9,
+          "order": 9,
+          "source_color": [
+            0.36130688,
+            0.5149178,
+            0.000607054,
+            1.0
+          ],
+          "target_color": [
+            0.36130688,
+            0.5149178,
+            0.000607054
+          ],
+          "influence": 0.0,
+          "locked": false,
+          "position": null,
+          "size": "Point"
+        },
+        {
+          "id": 10,
+          "order": 10,
+          "source_color": [
+            0.003676507,
+            0.011612245,
+            0.30946895,
+            1.0
+          ],
+          "target_color": [
+            0.003676507,
+            0.011612245,
+            0.30946895
+          ],
+          "influence": 0.0,
+          "locked": false,
+          "position": null,
+          "size": "Point"
+        },
+        {
+          "id": 11,
+          "order": 11,
+          "source_color": [
+            0.61720663,
+            0.033104762,
+            0.42326775,
+            1.0
+          ],
+          "target_color": [
+            0.61720663,
+            0.033104762,
+            0.42326775
+          ],
+          "influence": 0.0,
+          "locked": false,
+          "position": null,
+          "size": "Point"
+        },
+        {
+          "id": 12,
+          "order": 12,
+          "source_color": [
+            0.9734455,
+            0.15592647,
+            0.20863685,
+            1.0
+          ],
+          "target_color": [
+            0.9734455,
+            0.15592647,
+            0.20863685
+          ],
+          "influence": 0.0,
+          "locked": false,
+          "position": null,
+          "size": "Point"
+        },
+        {
+          "id": 13,
+          "order": 13,
+          "source_color": [
+            0.9473066,
+            0.77582234,
+            0.30946895,
+            1.0
+          ],
+          "target_color": [
+            0.9473066,
+            0.77582234,
+            0.30946895
+          ],
+          "influence": 0.0,
+          "locked": false,
+          "position": null,
+          "size": "Point"
+        },
+        {
+          "id": 14,
+          "order": 14,
+          "source_color": [
+            0.000303527,
+            0.000303527,
+            0.0,
+            1.0
+          ],
+          "target_color": [
+            0.000303527,
+            0.000303527,
+            0.0
+          ],
+          "influence": 0.0,
+          "locked": false,
+          "position": null,
+          "size": "Point"
+        },
+        {
+          "id": 15,
+          "order": 15,
+          "source_color": [
+            0.9130987,
+            0.8962694,
+            0.8631573,
+            1.0
+          ],
+          "target_color": [
+            0.9130987,
+            0.8962694,
+            0.8631573
+          ],
+          "influence": 0.0,
+          "locked": false,
+          "position": null,
+          "size": "Point"
+        },
+        {
+          "id": 16,
+          "order": 16,
+          "source_color": [
+            0.65837485,
+            0.64447975,
+            0.61720663,
+            1.0
+          ],
+          "target_color": [
+            0.65837485,
+            0.64447975,
+            0.61720663
+          ],
+          "influence": 0.0,
+          "locked": false,
+          "position": null,
+          "size": "Point"
+        },
+        {
+          "id": 17,
+          "order": 17,
+          "source_color": [
+            0.29613832,
+            0.29613832,
+            0.29613832,
+            1.0
+          ],
+          "target_color": [
+            0.29613832,
+            0.29613832,
+            0.29613832
+          ],
+          "influence": 0.0,
+          "locked": false,
+          "position": null,
+          "size": "Point"
+        },
+        {
+          "id": 18,
+          "order": 18,
+          "source_color": [
+            0.06847818,
+            0.06847818,
+            0.07036011,
+            1.0
+          ],
+          "target_color": [
+            0.06847818,
+            0.06847818,
+            0.07036011
+          ],
+          "influence": 0.0,
+          "locked": false,
+          "position": null,
+          "size": "Point"
+        }
+      ],
+      "next_site_id": 19,
+      "matching": "Perceptual",
+      "transition": {
+        "start": 0.0,
+        "midpoint": 0.5,
+        "end": 1.0
+      }
+    },
+    "steps": [
+      {
+        "working_space": "Oklch",
+        "components": "Hue",
+        "operation": {
+          "RotateHue": {
+            "degrees": 0.0
+          }
+        },
+        "pass_through": "PreserveUnselectedComponents",
+        "alpha": "PassThroughStraight",
+        "conversion_back": "KeepLinearSrgbF32"
+      }
+    ]
+  }
+}

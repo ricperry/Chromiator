@@ -1,124 +1,173 @@
 # Chromiator
 
-The executable is `chromiator`, projects use `.chromiator`, and application data
-is stored in `$XDG_DATA_HOME/chromiator` (normally `~/.local/share/chromiator`).
-This pre-alpha rename has no legacy extension or data-folder compatibility layer;
-existing personal data is not automatically moved or rewritten.
+Chromiator is an artist-directed perceptual color-space partitioning and remapping
+application for Linux. It uses editable Voronoi sites in color space to simplify,
+segment, recolor, and blend an image's color structure while preserving its
+spatial structure.
 
-Chromiator is a native Rust/GTK4 creative color-mapping application. It maps
-image colors to independently editable target colors using weighted Voronoi
-matching in color space. It is not a geometric tessellation drawing tool.
+Use it for limited-palette artwork, grayscale studies, graphic posters, print-like
+color reduction, or softly blended recoloring. You control which Source colors
+define the regions and which Target colors replace them. Regions are determined
+by color similarity, not by a pixel's location on the canvas.
 
-The application now focuses exclusively on Voronoi mapping. The separate
-Thresholds processor and mode-switching UI have been removed. The GTK4 shell
-adopts Toniator's canvas-first layout and grouped right inspector without a
-libadwaita dependency.
+## Installation
 
-## Refactor status
+Chromiator uses native GTK4 widgets and runs on Linux, with Fedora and
+GNOME/Wayland as its primary environment. It requires GTK 4.12 or newer and a
+recent stable Rust toolchain to build from source. No GPU compute setup is needed.
 
-Implementation edits through the GTK4 shell conversion are present. The warning
-cleanup now builds cleanly, passes strict Clippy and 93 tests, and has received
-bounded private-Sway interaction checks. Save, drag-history, and picker follow-up
-fixes are verified; **responsive-layout finding THR-065 remains open.**
-The user accepted the current refactor, with THR-065 deferred as low priority.
-This is not a published release checkpoint.
-See `docs/BUG_HUNT_FOLLOWUP_2026-09-19.md` for current evidence and limitations.
-
-Before the final shell conversion, the architecture checkpoint passed 88 tests
-(7 library, 12 binary, 69 core). The earlier Voronoi-only checkpoint passed strict
-Clippy and an exact floating-point/coverage comparison across four matching
-spaces and two smoothing amounts. Those results do not validate subsequent
-changes. The newer bug-hunt report supersedes those build/test counts, but
-complete native workflow and performance verification remain unfinished.
-See `docs/FUNCTIONAL_AUDIT.md` and `ISSUES.md`.
-
-## Creative workflow
-
-- Open a raster image or use the Spectrum Example.
-- Edit Color mapping settings, including matching space and input smoothing.
-- Adjust Transition width to blend Target colors across color-space boundaries,
-  using Oklab or Linear RGB as the Blend space.
-- Click visible artwork to add a Color site: Source-view samples attach to the
-  original image; Result-view samples use the displayed floating-point preview
-  and remain detached. Split follows the image visible on each side.
-- Use the `+` button in Color sites to pick a detached Source color directly.
-  Select creates one undoable site with matching Source/Target; Cancel adds none.
-- Select Color sites, then edit each site's Source and Target colors.
-- Adjust influence, sampling footprint, and locks; compare Source and Result.
-- Reuse source-free presets, undo/redo authored edits, save projects, and export
-  a full-resolution result without editor markers.
-
-Source and Target are independent. Editing, moving, or resampling an existing
-Source preserves its Target; direct Source editing detaches its image position.
-The arrow button explicitly matches Target to Source and supports Undo.
-Locked sites protect their
-local edits and deletion. Sampling uses the original image rather than the
-scaled preview. RGB and HSV matching are Voronoi metrics, not Thresholds modes.
-The existing OKHSL metric remains supported internally but is not promoted in
-the creation menu.
-
-Keyboard navigation supplements Tab/Shift+Tab: F6 and Shift+F6 cycle between
-the canvas, mapping controls, and color-site list. Alt+M/S/T/B focus Matching,
-Smoothing, Transition width, and Blend space when available. Expanded sites
-provide Alt+I/P/F for Influence, Source position, and Footprint. In the picker,
-Alt+C/H focus Color model and Hex. Controls expose names and label relations
-for AT-SPI; Source and Target swatches are identified by site number.
-
-## Build and launch
-
-Use Rust/Cargo and the GTK4 development toolchain, including GLib's resource
-compiler and `pkg-config`. `build.rs` compiles the XML UI and CSS resources using
-`glib-build-tools`; Blueprint and libadwaita are not required.
+On Fedora, install the build prerequisites:
 
 ```sh
-cargo run --release
-cargo run --release -- --open /path/to/image.png
+sudo dnf install gcc git cargo rust gtk4-devel pkgconf-pkg-config
 ```
 
-The old `--method` and `--threshold-space` options are removed and report an
-error. The archive under `archive/webapp/` is historical reference, not the
-native application's runtime.
+Download and build the application:
 
-## Color and persistence contracts
+```sh
+git clone https://github.com/ricperry/Chromiator.git
+cd Chromiator
+cargo build --release --locked
+./target/release/chromiator
+```
 
-Processing uses straight-alpha linear-sRGB RGBA `f32`, with ICC interpretation
-at import and format-specific encoding at export. Preserve transfer functions,
-alpha, site ordering, metric definitions, and influence weighting when changing
-the engine. Input smoothing precedes mapping; ordered hue operations follow it.
-Preview smoothing is measured in preview pixels and export smoothing in source
-pixels, preserving the existing behavior.
+Optionally install the executable for your user:
 
-New projects use schema **v6** and presets use schema **v3**. Older formats are
-rejected explicitly; they are not migrated, silently reinterpreted, or rewritten.
-Keep older files if their contents are still needed.
+```sh
+install -Dm755 target/release/chromiator ~/.local/bin/chromiator
+```
 
-A required symmetric Start/Midpoint/End transition profile now supports a global
-Transition width and Oklab or Linear RGB blending. All competitive sites blend;
-there is no blend-scope selector or shared-border contact solver. Width zero
-preserves hard mapping and deterministic ties. Files containing the removed
-`blend_scope` field are rejected; there is no compatibility layer. File formats
-are experimental, not finalized. Pre-alpha format and preset cleanup is tracked
-as THR-066. The user accepted the simplification. Test cleanup is complete:
-103 tests, strict Clippy, build, three opt-in release checks, and a focused
-native transition check pass. See `docs/TRANSITION_TEST_CLEANUP.md` for current
-evidence; earlier Shared borders reports are historical.
+Run `chromiator` when `~/.local/bin` is on your `PATH`, or open a file directly:
 
-## Development
+```sh
+chromiator --open /path/to/artwork.png
+chromiator --open /path/to/project.chromiator
+```
 
-The 2026-09-19 accessibility/picker follow-up passes 105 regular tests, strict
-Clippy, app build, and three opt-in release checks. Private-Sway checks verify
-site-qualified accessible names, keyboard region navigation, Source/Target
-independence, explicit matching and Undo, and the corrected saturated-blue
-OKHSL picker. See `docs/ACCESSIBILITY_VERIFICATION_2026-09-19.md` for evidence
-and remaining accessibility limitations.
+## Getting started
 
-`docs/ARCHITECTURE.md` describes ownership, typed edits, processing boundaries,
-and the future blending extension point. `docs/FUNCTIONAL_AUDIT.md` distinguishes
-completed checkpoint evidence from pending final checks. `ISSUES.md` retains
-stable issue IDs and milestone status.
+1. Open an image, browse an existing project, or try the Spectrum Example from
+   the welcome screen.
+2. Choose a preset for a starting point, or edit the automatically created sites.
+3. Select a site and change its Target swatch to recolor the colors it represents.
+4. Adjust Matching, Influence, and Transition width to control the result.
+5. Compare Source and Result, save a project to keep editing, or export an image.
 
-Project orchestration targets `gpt-6-astra` at high reasoning effort through
-`.codex/config.toml` and the `chromiator-orchestrator` skill. The adopted
-`gtk-wayland-debug` skill runs native checks in a private Sway session without
-controlling the normal GNOME desktop. Automated Sway evidence is not human
-GNOME/Mutter acceptance.
+## Canvas and color sites
+
+**Source** displays the original image. **Result** displays the processed image.
+**Split** displays Result on the left and Source on the right; drag the divider
+to reveal either side. Hide the adjustments panel when you want more canvas space.
+
+Click visible artwork to create a site from that color. A Source sample attaches
+to the original image; a Result sample uses the processed color and is detached.
+Clicking an existing site marker selects it. To sample the original image, expose
+it with Source or Split first.
+
+The **+** button in Color sites opens the picker for a detached Source color.
+A new site's Target initially matches its Source. Canceling the picker adds nothing.
+
+Expand a site to edit its controls:
+
+| Setting | What it does |
+| --- | --- |
+| Source | The color used to determine which image colors belong to this site. Editing it directly detaches the site from the image. |
+| Target | The replacement color. Editing or moving Source does not change Target. |
+| Arrow between swatches | Explicitly assigns the Source color to Target. |
+| Influence | Expands or contracts the site's reach in color space. Higher values attract more colors; this is not a spatial brush radius. |
+| Source position | Moves an attached sample within the original image. |
+| Footprint | Samples a point or averages a 3 x 3 or 5 x 5 neighborhood in the original image. |
+| Lock | Protects the site's local settings and prevents its deletion. |
+
+Source and Target pickers support perceptual color controls as well as RGB values
+and hexadecimal input. Changes are committed when you select a color; Cancel
+leaves the original value alone.
+
+## Color mapping settings
+
+| Setting | What it does |
+| --- | --- |
+| Matching | Chooses the color-distance model for assigning pixels to sites. Perceptual (OKLab) is a useful starting point; RGB and HSV produce different partitions. |
+| Smoothing | Smooths the input before color mapping. Zero preserves fine detail; higher values favor broader structures. |
+| Transition width | At 0%, each pixel takes its winning site's Target color. Increasing the width blends competitive sites across color-space boundaries. This is not an image blur. |
+| Blend space | Mixes Target colors in Oklab or Linear RGB, independently of Matching. Available when Transition width is greater than zero. |
+
+Blending can produce more output colors than the number of Target swatches.
+Hard transitions are useful for strict palette reduction; wider transitions are
+useful for smooth recoloring. Smoothing is measured in preview pixels for the
+preview and source pixels for export, so fine smoothed details can differ at
+different resolutions.
+
+## Presets
+
+The built-in library offers nineteen starting points:
+
+| Character | Presets |
+| --- | --- |
+| Graphic and colorful | Ink & Paper, Desert Dusk, Blueprint, Arcade Four, Night Neon, Teal and Tangerine, Primary Print |
+| Muted and organic | Moss and Clay, Soft Pastel, Watercolor |
+| Tonal and monochrome | Graphite, Sepia Press, Smudged Graphite |
+| Reduced-ink looks | Mimeograph, Photocopy, Carbon Copy, Old Newsprint, Two-Color Press, Risograph |
+
+Presets are editable recipes, not separate processing modes. Some deliberately
+discard subtle color information; others use smoothing and soft transitions.
+Print-inspired names describe the palette and reduction style, not simulated
+paper texture, halftones, or physical ink behavior.
+
+Choosing a preset applies it immediately. Use Undo to return to your previous
+settings. **Save Preset...** stores your current processing settings for reuse;
+it does not include source artwork or image-marker positions. Built-ins are not
+overwritten when you save a personal preset.
+
+Personal presets live in `$XDG_DATA_HOME/chromiator/presets`, normally
+`~/.local/share/chromiator/presets`. Use **Open personal preset folder** to find
+them and **Refresh personal presets** after making changes outside the app.
+The app reports invalid preset files without preventing valid presets from loading.
+
+## Projects and export
+
+**Save Project** writes a `.chromiator` file containing the original artwork and
+editable processing settings. **Save Project As...** creates another project file.
+Recent projects appear on the welcome screen.
+
+Open PNG, JPEG, TIFF, WebP, BMP, or still GIF images. SVG and animated GIF input
+are not supported. Embedded RGB color profiles are interpreted on import; the
+working image uses floating-point linear sRGB with transparency preserved.
+
+Export the full-resolution result without editor markers:
+
+| Format | Use |
+| --- | --- |
+| PNG 8-bit | Everyday sharing and viewing. |
+| PNG 16-bit | Higher-precision integer output for further editing. |
+| OpenEXR 32-bit float | Linear-sRGB floating-point output for compatible creative tools. |
+
+Exporting an image does not replace saving an editable project. Project and
+preset formats are still pre-alpha and may change; keep original artwork and
+backups. Older unsupported formats and the former project extension are not
+automatically migrated. Application data is stored under
+`$XDG_DATA_HOME/chromiator`, normally `~/.local/share/chromiator`.
+
+## Keyboard navigation
+
+| Shortcut | Action |
+| --- | --- |
+| Ctrl+O | Open artwork or a project. |
+| Ctrl+S | Save project. |
+| Ctrl+Shift+S | Save project as. |
+| Ctrl+Shift+E | Export image. |
+| Tab / Shift+Tab | Move between controls. |
+| F6 / Shift+F6 | Move between the canvas, mapping controls, and site list. |
+| Alt+M / S / T / B | Focus Matching, Smoothing, Transition width, or Blend space. |
+| Alt+I / P / F | Focus Influence, Source position, or Footprint in an expanded site. |
+| Alt+C / H | Focus Color model or Hex in a color picker. |
+
+Undo and Redo are available in the toolbar. Controls expose accessible names
+and state through GTK's accessibility interfaces.
+
+## License and credits
+
+Chromiator is free software under the GNU General Public License, version 3 or
+any later version. See [LICENSE.md](LICENSE.md) for the unmodified license text
+and [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for library and color-science
+credits. Third-party components retain their respective licenses.

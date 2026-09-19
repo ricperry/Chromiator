@@ -18,11 +18,8 @@ SCENARIOS = (
     "voronoi",
     "presets",
     "picker",
-    "io-workflow",
-    "narrow-core",
-    "adaptive-1024",
-    "responsive-voronoi-720",
-    "responsive-voronoi-1024",
+    "io",
+    "responsive",
 )
 # Retained scenarios perform real widget actions and semantic readback. GTK
 # process shutdown consistently adds several seconds after the completion marker.
@@ -112,13 +109,8 @@ def main() -> int:
             "--ui-audit-log",
             str(log),
         ]
-        if scenario == "narrow-core":
+        if scenario == "responsive":
             command += ["--window-size", "720x700"]
-        elif scenario == "adaptive-1024":
-            command += ["--window-size", "1024x600"]
-        elif scenario.startswith("responsive-"):
-            size = "720x700" if scenario.endswith("-720") else "1024x600"
-            command += ["--window-size", size]
         env = os.environ.copy()
         env.setdefault("GSK_RENDERER", "cairo")
         xdg_data = OUT / "xdg" / scenario

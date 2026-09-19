@@ -1,9 +1,9 @@
 [package]
 name = "chromiator"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 license = "GPL-3.0-or-later"
-description = "A native precision posterization studio for GNOME"
+description = "Artist-directed perceptual color partitioning and remapping for GNOME"
 
 [dependencies]
 anyhow = "1.0"
@@ -21,9 +21,6 @@ serde_json = { version = "1.0", features = ["float_roundtrip"] }
 tempfile = "3.20"
 thiserror = "2.0"
 zip = { version = "2.4", default-features = false, features = ["deflate"] }
-
-[dev-dependencies]
-tempfile = "3.20"
 
 [build-dependencies]
 glib-build-tools = "0.22"

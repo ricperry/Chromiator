@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Chromiator
+Comment=Perceptual color partitioning and remapping
+Exec=chromiator %f
+Icon=io.github.chromiator.Chromiator
+Terminal=false
+Categories=Graphics;2DGraphics;RasterGraphics;
+Keywords=color;palette;Voronoi;art;
+StartupNotify=true

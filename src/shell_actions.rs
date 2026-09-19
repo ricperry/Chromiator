@@ -94,7 +94,7 @@ fn open_filter(kind: OpenKind) -> gtk::FileFilter {
         }
         OpenKind::Project => {
             filter.set_name(Some("Chromiator projects"));
-            filter.add_pattern("*.[Tt][Hh][Rr][Ee][Ss][Hh][Ii][Aa][Tt][Oo][Rr]");
+            filter.add_suffix("chromiator");
         }
     }
     filter
@@ -558,4 +558,29 @@ pub(super) fn poll(ui: &Rc<Ui>, state: Rc<RefCell<State>>) {
         maybe_start_ui_audit(&ui, &state);
         glib::ControlFlow::Continue
     });
+}
+
+#[cfg(test)]
+mod project_filter_tests {
+    use super::*;
+
+    /// Exercises GTK's chooser filter rather than a duplicate extension predicate.
+    #[test]
+    #[ignore = "requires a display; run in the private Sway session"]
+    fn project_filter_accepts_chromiator_files() {
+        gtk::init().expect("GTK display required for file-filter regression");
+        let filter = open_filter(OpenKind::Project);
+        for (name, expected) in [
+            ("Artwork.chromiator", true),
+            ("Artwork.CHROMIATOR", true),
+            ("Artwork.ChRoMiAtOr", true),
+            ("Artwork.threshiator", false),
+            ("Artwork.chromiator.bak", false),
+            ("Artwork.png", false),
+        ] {
+            let info = gio::FileInfo::new();
+            info.set_display_name(name);
+            assert_eq!(filter.match_(&info), expected, "chooser filter: {name}");
+        }
+    }
 }
