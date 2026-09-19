@@ -1,5 +1,11 @@
 # Building distribution bundles
 
+The [0.2.0 Linux preview](https://github.com/ricperry/Chromiator/releases/tag/v0.2.0)
+was published from checkpoint `7f7f7353ff315c73636e5e3afc7a82ac9e7a37be`.
+Both x86_64 bundles passed six private-Sway audit scenarios each; uploaded
+downloads passed SHA-256 verification. Release notes and build-info.json record
+the remaining compatibility, portal, and accessibility verification limits.
+
 Run from the checkout with Python 3.11+, Cargo, and the normal release-build
 dependencies. Version comes from Cargo.toml; only native x86_64/aarch64 builds
 are supported. Scripts do not install tools, alter remotes, or publish releases.

@@ -1,5 +1,10 @@
 # Chromiator
 
+**Linux downloads:** [Chromiator 0.2.0 preview](https://github.com/ricperry/Chromiator/releases/tag/v0.2.0)
+provides x86_64 AppImage and Flatpak packages, source, license notices, and
+checksums. This is a pre-alpha release; see the release notes for installation
+instructions and compatibility limits.
+
 Chromiator is an artist-directed perceptual color-space partitioning and remapping
 application for Linux. It uses editable Voronoi sites in color space to simplify,
 segment, recolor, and blend an image's color structure while preserving its
