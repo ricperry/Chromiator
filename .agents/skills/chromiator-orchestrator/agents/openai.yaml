@@ -1,0 +1,4 @@
+interface:
+  display_name: "Chromiator Astra Orchestrator"
+  short_description: "Astra-led GTK refactoring and Voronoi workflows"
+  default_prompt: "Use $chromiator-orchestrator to carry out the authorized Chromiator task with GPT-6 Astra high, preserving the Voronoi color pipeline and collecting relevant GTK evidence."

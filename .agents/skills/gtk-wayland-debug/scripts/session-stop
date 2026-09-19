@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=common.sh
+source "$SCRIPT_DIR/common.sh"
+
+if [[ ! -r "$SESSION_ENV" ]]; then
+    printf 'no private session is active\n'
+    exit 0
+fi
+
+# shellcheck disable=SC1090
+source "$SESSION_ENV"
+stop_app
+
+for unit in "${CHROMIATOR_WAYVNC_UNIT:-}" "${CHROMIATOR_SWAY_UNIT:-}" "${CHROMIATOR_ATSPI_UNIT:-}" "${CHROMIATOR_DBUS_UNIT:-}"; do
+    if unit_is_active "$unit"; then
+        user_systemctl stop "$unit"
+    fi
+done
+
+rm -f -- "$SESSION_ENV" "$ACTIVE_EVIDENCE_FILE"
+if [[ -n "${XDG_RUNTIME_DIR:-}" && "$XDG_RUNTIME_DIR" == "$HOST_XDG_RUNTIME_DIR"/chromiator-debug.* ]]; then
+    rm -rf -- "$XDG_RUNTIME_DIR"
+fi
+printf 'private headless Sway session stopped; logs and evidence were preserved\n'

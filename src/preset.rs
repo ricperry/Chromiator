@@ -6,18 +6,15 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 
-use crate::document::{
-    ComponentOperation, Document, Method, ProcessingStep, Recipe, ThresholdState, VoronoiState,
-};
+use crate::document::{Document, Preprocessing, ProcessingStep, Recipe, VoronoiState};
 use crate::export::atomic_write_checked;
 
-pub const PRESET_VERSION: u32 = 2;
+pub const PRESET_VERSION: u32 = 3;
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PresetProcessing {
-    pub active_method: Method,
-    pub threshold: ThresholdState,
+    pub preprocessing: Preprocessing,
     pub voronoi: VoronoiState,
     pub steps: Vec<ProcessingStep>,
 }
@@ -27,8 +24,7 @@ impl From<&Recipe> for PresetProcessing {
         let mut voronoi = recipe.voronoi.clone();
         detach_sites(&mut voronoi);
         Self {
-            active_method: recipe.active_method,
-            threshold: recipe.threshold.clone(),
+            preprocessing: recipe.preprocessing.clone(),
             voronoi,
             steps: recipe.steps.clone(),
         }
@@ -38,8 +34,7 @@ impl From<&Recipe> for PresetProcessing {
 impl PresetProcessing {
     pub fn recipe(&self) -> Recipe {
         let mut recipe = Recipe {
-            active_method: self.active_method,
-            threshold: self.threshold.clone(),
+            preprocessing: self.preprocessing.clone(),
             voronoi: self.voronoi.clone(),
             steps: self.steps.clone(),
         };
@@ -48,15 +43,10 @@ impl PresetProcessing {
     }
 
     pub fn validate(&self) -> Result<()> {
-        self.threshold
+        self.recipe()
             .validate()
             .map_err(anyhow::Error::msg)
-            .context("invalid Threshold state")?;
-        self.voronoi
-            .validate()
-            .map_err(anyhow::Error::msg)
-            .context("invalid Voronoi state")?;
-        validate_steps(&self.steps)
+            .context("invalid processing recipe")
     }
 }
 
@@ -127,7 +117,7 @@ pub struct PresetStore {
 
 impl PresetStore {
     pub fn system() -> Self {
-        Self::at(glib::user_data_dir().join("threshiator/presets"))
+        Self::at(glib::user_data_dir().join("chromiator/presets"))
     }
 
     pub fn at(directory: impl Into<PathBuf>) -> Self {
@@ -349,35 +339,6 @@ fn detach_sites(voronoi: &mut VoronoiState) {
     for site in &mut voronoi.sites {
         site.position = None;
     }
-}
-
-fn validate_steps(steps: &[ProcessingStep]) -> Result<()> {
-    for (index, step) in steps.iter().enumerate() {
-        match &step.operation {
-            ComponentOperation::ThreeBandQuantize {
-                thresholds,
-                outputs,
-                ..
-            } => {
-                if thresholds
-                    .iter()
-                    .chain(outputs)
-                    .any(|value| !value.is_finite() || !(0.0..=1.0).contains(value))
-                    || thresholds[0] >= thresholds[1]
-                {
-                    bail!("processing step {} has invalid quantizer values", index + 1);
-                }
-            }
-            ComponentOperation::RotateHue { degrees } if !degrees.is_finite() => {
-                bail!(
-                    "processing step {} has a non-finite hue rotation",
-                    index + 1
-                );
-            }
-            ComponentOperation::RotateHue { .. } => {}
-        }
-    }
-    Ok(())
 }
 
 #[cfg(test)]

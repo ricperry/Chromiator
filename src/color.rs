@@ -1,5 +1,7 @@
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum ColorModel {
+    /// Encoded sRGB channels, normalized internally and displayed as 0-255.
+    Rgb,
     Hsv,
     Hsl,
     #[default]
@@ -62,6 +64,7 @@ impl DraftColor {
 
     pub fn values(self, model: ColorModel) -> [f64; 3] {
         match model {
+            ColorModel::Rgb => self.encoded(),
             ColorModel::Hsv => {
                 let mut values = encoded_to_hsv(self.encoded());
                 if values[1] < 1e-9 {
@@ -90,6 +93,7 @@ impl DraftColor {
 
     pub fn set_values(&mut self, model: ColorModel, values: [f64; 3]) {
         self.linear = match model {
+            ColorModel::Rgb => encoded_to_linear(values.map(|value| value.clamp(0.0, 1.0))),
             ColorModel::Hsv => {
                 self.hue_hints[0] = values[0].rem_euclid(360.0);
                 encoded_to_linear(hsv_to_encoded(values))
@@ -457,7 +461,27 @@ fn find_gamut_intersection(a: f64, b: f64, l_1: f64, c_1: f64, l_0: f64, cusp: C
 
 fn chroma_bounds(l: f64, a: f64, b: f64) -> ChromaBounds {
     let cusp = find_cusp(a, b);
-    let c_max = find_gamut_intersection(a, b, l, 1.0, l, cusp);
+    let mut c_max = find_gamut_intersection(a, b, l, 1.0, l, cusp);
+    // The analytic cusp approximation can cross a different RGB boundary near
+    // sector seams (notably saturated blue). Contract chroma at fixed L/hue
+    // before deriving the saturation curve. Forward and inverse use this same
+    // boundary, rather than hiding a substantial excursion by channel clipping.
+    let is_bounded = |chroma: f64| {
+        in_srgb_gamut(oklab_to_linear([l, chroma * a, chroma * b]))
+    };
+    if c_max.is_finite() && c_max > 0.0 && !is_bounded(c_max) {
+        let mut lower = 0.0;
+        let mut upper = c_max;
+        for _ in 0..32 {
+            let midpoint = (lower + upper) * 0.5;
+            if is_bounded(midpoint) {
+                lower = midpoint;
+            } else {
+                upper = midpoint;
+            }
+        }
+        c_max = lower;
+    }
     let s_max = cusp.c / cusp.l;
     let t_max = cusp.c / (1.0 - cusp.l);
     let s_mid = 0.115_169_93
@@ -538,7 +562,26 @@ pub fn okhsl_to_linear(okhsl: [f64; 3]) -> Option<[f64; 3]> {
     let (a, b) = (radians.cos(), radians.sin());
     let l = toe_inverse(lightness);
     let chroma = okhsl_chroma(saturation, chroma_bounds(l, a, b));
-    let mut linear = oklab_to_linear([l, chroma * a, chroma * b]);
+    let at_chroma = |value: f64| oklab_to_linear([l, value * a, value * b]);
+    let mut linear = at_chroma(chroma);
+    if !linear.iter().all(|channel| channel.is_finite()) {
+        return None;
+    }
+    // Near the blue seam, a bounded endpoint can still have an out-of-gamut
+    // intermediate sample. Contract that sample along the same L/hue ray.
+    if !in_srgb_gamut(linear) {
+        let mut lower = 0.0;
+        let mut upper = chroma;
+        for _ in 0..32 {
+            let midpoint = (lower + upper) * 0.5;
+            if in_srgb_gamut(at_chroma(midpoint)) {
+                lower = midpoint;
+            } else {
+                upper = midpoint;
+            }
+        }
+        linear = at_chroma(lower);
+    }
     for channel in &mut linear {
         if !channel.is_finite()
             || *channel < -OKHSL_GAMUT_EPSILON

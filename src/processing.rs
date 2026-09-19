@@ -1,11 +1,9 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use crate::color::{encoded_to_hsv, hsv_to_encoded, linear_to_okhsl_cylinder};
-use crate::document::{
-    ColorComponent, ComponentOperation, ComponentSet, Method, PixelImage, Recipe, ThresholdSpace,
-    VoronoiMatching,
-};
+use crate::color::{encoded_to_hsv, linear_to_okhsl_cylinder};
+use crate::document::{ComponentOperation, ComponentSet, PixelImage, Recipe, VoronoiMatching};
 use crate::voronoi::{distance2, linear_rgb_to_oklab};
+use crate::transitions::{BlendScratch, CompiledBlend};
 
 pub const PREVIEW_MAX_DIMENSION: u32 = 1600;
 
@@ -23,16 +21,6 @@ pub struct Coverage {
 }
 
 #[inline]
-fn band(value: f32, thresholds: [f32; 2], outputs: [f32; 3]) -> f32 {
-    if value <= thresholds[0] {
-        outputs[0]
-    } else if value <= thresholds[1] {
-        outputs[1]
-    } else {
-        outputs[2]
-    }
-}
-
 pub fn process(source: &PixelImage, recipe: &Recipe) -> PixelImage {
     process_cancellable(source, recipe, 0, &AtomicU64::new(0)).expect("fixed generation")
 }
@@ -64,13 +52,12 @@ pub fn process_cancellable_with_progress_and_coverage(
     current: &AtomicU64,
     mut progress: impl FnMut(f64),
 ) -> Option<(PixelImage, Coverage)> {
-    let smoothing = recipe.threshold.input_smoothing;
+    let compiled = CompiledVoronoi::compile_cancellable(recipe, &|| current.load(Ordering::Acquire) == generation)
+        .expect("cannot process an invalid Voronoi recipe")?;
+    let mut blend_scratch = BlendScratch::new(if compiled.blend.is_some() { compiled.sites.len() } else { 0 });
+    let smoothing = recipe.preprocessing.input_smoothing;
     let smoothing_rows = usize::from(smoothing > 0.0) * 2;
-    let active_steps = recipe
-        .steps
-        .iter()
-        .filter(|step| !matches!(step.operation, ComponentOperation::ThreeBandQuantize { .. }))
-        .count();
+    let active_steps = recipe.steps.len();
     let method_rows = 1usize;
     let total_rows =
         ((active_steps + method_rows + smoothing_rows).max(1) * source.height as usize) as f64;
@@ -86,120 +73,49 @@ pub fn process_cancellable_with_progress_and_coverage(
         source.pixels.to_vec()
     };
     let mut coverage = Coverage {
-        site_counts: recipe
-            .voronoi
+        site_counts: compiled
             .sites
             .iter()
-            .map(|site| (site.id, 0))
+            .map(|site| (site.context.id, 0))
             .collect(),
         visible_total: 0,
     };
-    if recipe.active_method == Method::Voronoi {
-        let sites: Vec<_> = recipe
-            .voronoi
-            .sites
-            .iter()
-            .map(|site| {
-                let source_rgb = [
-                    site.source_color[0],
-                    site.source_color[1],
-                    site.source_color[2],
-                ];
-                let encoded = source_rgb.map(|channel| linear_to_srgb(channel) as f64);
-                let hsv = encoded_to_hsv(encoded);
-                CompiledSite {
-                    id: site.id,
-                    order: site.order,
-                    oklab: linear_rgb_to_oklab(source_rgb),
-                    okhsl_cylinder: if recipe.voronoi.matching == VoronoiMatching::Okhsl {
-                        linear_to_okhsl_cylinder(source_rgb.map(f64::from))
-                            .expect("validated bounded site colors have OKHSL coordinates")
-                    } else {
-                        [0.0; 3]
-                    },
-                    encoded,
-                    hsv_cone: hsv_cone_point(hsv),
-                    influence: site.influence,
-                    target: site.target_color,
-                }
-            })
-            .collect();
-        for (row, scanline) in pixels.chunks_mut(source.width as usize).enumerate() {
-            if row % 8 == 0 && current.load(Ordering::Acquire) != generation {
-                return None;
+    for (row, scanline) in pixels.chunks_mut(source.width as usize).enumerate() {
+        if row % 8 == 0 && current.load(Ordering::Acquire) != generation {
+            return None;
+        }
+        for pixel in scanline {
+            if pixel[3] == 0.0 {
+                pixel[..3].fill(0.0);
+                continue;
             }
-            for pixel in scanline {
-                if pixel[3] == 0.0 {
-                    pixel[..3].fill(0.0);
-                    continue;
-                }
-                coverage.visible_total += 1;
-                if let Some(site) = nearest_site(*pixel, &sites, recipe.voronoi.matching) {
-                    if let Some((_, count)) = coverage
-                        .site_counts
-                        .iter_mut()
-                        .find(|(id, _)| *id == site.id)
-                    {
-                        *count += 1;
+            coverage.visible_total += 1;
+            if let Some(index) = compiled.winner_index(*pixel) {
+                coverage.site_counts[index].1 += 1;
+                *pixel = if let Some(blend) = &compiled.blend {
+                    let coordinates = compiled.match_coordinates(*pixel);
+                    for (score, site) in blend_scratch.scores.iter_mut().zip(&compiled.sites) {
+                        *score = distance2(coordinates, compiled.site_coordinates(site)) * site.distance_weight;
                     }
-                    pixel[..3].copy_from_slice(&site.target);
-                }
+                    blend.resolve(*pixel, &mut blend_scratch)
+                } else {
+                    compiled.resolve_hard(*pixel, index)
+                };
             }
-            completed_rows += 1;
-            progress(completed_rows as f64 / total_rows);
         }
-    }
-    if recipe.active_method == Method::Thresholds {
-        for (row, scanline) in pixels.chunks_mut(source.width as usize).enumerate() {
-            if row % 8 == 0 && current.load(Ordering::Acquire) != generation {
-                return None;
-            }
-            for pixel in scanline {
-                apply_threshold(pixel, recipe);
-            }
-            completed_rows += 1;
-            progress(completed_rows as f64 / total_rows);
-        }
+        completed_rows += 1;
+        progress(completed_rows as f64 / total_rows);
     }
     for step in &recipe.steps {
-        if matches!(step.operation, ComponentOperation::ThreeBandQuantize { .. }) {
-            continue;
-        }
         for (row, scanline) in pixels.chunks_mut(source.width as usize).enumerate() {
             if row % 8 == 0 && current.load(Ordering::Acquire) != generation {
                 return None;
             }
             for pixel in scanline {
-                match (&step.components, &step.operation) {
-                    (
-                        components @ (ComponentSet::AllRgb | ComponentSet::SelectedRgb(_)),
-                        ComponentOperation::ThreeBandQuantize {
-                            thresholds,
-                            outputs,
-                            ..
-                        },
-                    ) => {
-                        for (index, component) in [
-                            ColorComponent::Red,
-                            ColorComponent::Green,
-                            ColorComponent::Blue,
-                        ]
-                        .into_iter()
-                        .enumerate()
-                        {
-                            let selected = matches!(components, ComponentSet::AllRgb)
-                                || matches!(components, ComponentSet::SelectedRgb(selected) if selected.contains(&component));
-                            if selected {
-                                pixel[index] = band(pixel[index], *thresholds, *outputs);
-                            }
-                        }
-                    }
-                    (ComponentSet::Hue, ComponentOperation::RotateHue { degrees }) => {
-                        let rotated = rotate_oklch([pixel[0], pixel[1], pixel[2]], *degrees);
-                        pixel[..3].copy_from_slice(&rotated);
-                    }
-                    _ => {}
-                }
+                let (ComponentSet::Hue, ComponentOperation::RotateHue { degrees }) =
+                    (&step.components, &step.operation);
+                let rotated = rotate_oklch([pixel[0], pixel[1], pixel[2]], *degrees);
+                pixel[..3].copy_from_slice(&rotated);
             }
             completed_rows += 1;
             progress(completed_rows as f64 / total_rows);
@@ -290,123 +206,179 @@ pub fn gaussian_blur_cancellable(
     PixelImage::new(source.width, source.height, output).ok()
 }
 
-fn apply_threshold(pixel: &mut [f32; 4], recipe: &Recipe) {
-    if pixel[3] == 0.0 {
-        pixel[..3].fill(0.0);
-        return;
-    }
-    let threshold = &recipe.threshold;
-    match threshold.active_space {
-        ThresholdSpace::Rgb => {
-            let mut components = [
-                linear_to_srgb(pixel[0]),
-                linear_to_srgb(pixel[1]),
-                linear_to_srgb(pixel[2]),
-            ];
-            for (value, quantizer) in components.iter_mut().zip(&threshold.rgb_state.components) {
-                if quantizer.enabled {
-                    *value = quantizer.quantize(*value);
-                }
-            }
-            for index in 0..3 {
-                pixel[index] = srgb_to_linear(components[index]);
-            }
-        }
-        ThresholdSpace::Hsv => {
-            let encoded = [
-                linear_to_srgb(pixel[0]) as f64,
-                linear_to_srgb(pixel[1]) as f64,
-                linear_to_srgb(pixel[2]) as f64,
-            ];
-            let original = encoded_to_hsv(encoded);
-            let mut hsv = original;
-            let state = &threshold.hsv_state;
-            if state.hue.enabled && original[1] > 1.0e-6 {
-                let origin = (state.hue_origin_degrees as f64).rem_euclid(360.0);
-                let relative_unit = ((original[0] - origin).rem_euclid(360.0) / 360.0) as f32;
-                hsv[0] =
-                    (state.hue.quantize(relative_unit) as f64 * 360.0 + origin).rem_euclid(360.0);
-            }
-            if state.saturation.enabled {
-                hsv[1] = state.saturation.quantize(original[1] as f32) as f64;
-            }
-            if state.value.enabled {
-                hsv[2] = state.value.quantize(original[2] as f32) as f64;
-            }
-            // Quantizing hue must never create chroma from an achromatic source.
-            if original[1] <= 1.0e-6 {
-                hsv[0] = original[0];
-                if !state.saturation.enabled {
-                    hsv[1] = original[1];
-                }
-            }
-            let rgb = hsv_to_encoded(hsv);
-            for index in 0..3 {
-                pixel[index] = srgb_to_linear(rgb[index].clamp(0.0, 1.0) as f32);
-            }
-        }
-    }
+/// Source and output context retained for the winning site and future boundary resolution.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CompiledSiteContext {
+    /// Stable persisted site identifier.
+    pub id: u64,
+    /// Stable tie-break order, lower values winning coincident boundaries.
+    pub order: u64,
+    /// Source color in straight-alpha linear-sRGB units, without alpha.
+    pub source_linear: [f32; 3],
+    /// Target color in linear-sRGB units.
+    pub target_linear: [f32; 3],
+    /// Dimensionless reach control retained for future boundary profiles.
+    pub influence: f64,
 }
 
 struct CompiledSite {
-    id: u64,
-    order: u64,
+    context: CompiledSiteContext,
     oklab: [f64; 3],
     okhsl_cylinder: [f64; 3],
     encoded: [f64; 3],
     hsv_cone: [f64; 3],
-    influence: f64,
-    target: [f32; 3],
+    distance_weight: f64,
 }
 
-fn nearest_site(
-    pixel: [f32; 4],
-    sites: &[CompiledSite],
+/// Immutable Voronoi matching partition compiled once before any pixel work.
+pub struct CompiledVoronoi {
     matching: VoronoiMatching,
-) -> Option<&CompiledSite> {
-    let coordinates = match matching {
-        VoronoiMatching::Perceptual => linear_rgb_to_oklab([pixel[0], pixel[1], pixel[2]]),
-        VoronoiMatching::Okhsl => {
-            linear_to_okhsl_cylinder([pixel[0] as f64, pixel[1] as f64, pixel[2] as f64])
-                .expect("bounded processing pixels have OKHSL coordinates")
+    sites: Vec<CompiledSite>,
+    blend: Option<CompiledBlend>,
+}
+
+impl CompiledVoronoi {
+    /// Validate processing state and precompute every site coordinate used by the selected metric.
+    pub fn compile(recipe: &Recipe) -> Result<Self, String> {
+        Self::compile_cancellable(recipe, &|| true).map(|compiled| compiled.expect("uncancellable compilation"))
+    }
+
+    fn compile_cancellable(recipe: &Recipe, current: &impl Fn() -> bool) -> Result<Option<Self>, String> {
+        recipe.validate_for_processing()?;
+        if !current() { return Ok(None); }
+        let matching = recipe.voronoi.matching;
+        let sites = recipe
+            .voronoi
+            .sites
+            .iter()
+            .map(|site| {
+                let source_linear = [
+                    site.source_color[0],
+                    site.source_color[1],
+                    site.source_color[2],
+                ];
+                let encoded = source_linear.map(|channel| f64::from(linear_to_srgb(channel)));
+                let hsv = encoded_to_hsv(encoded);
+                CompiledSite {
+                    context: CompiledSiteContext {
+                        id: site.id,
+                        order: site.order,
+                        source_linear,
+                        target_linear: site.target_color,
+                        influence: site.influence,
+                    },
+                    oklab: linear_rgb_to_oklab(source_linear),
+                    okhsl_cylinder: if matching == VoronoiMatching::Okhsl {
+                        linear_to_okhsl_cylinder(source_linear.map(f64::from))
+                            .expect("validated bounded site colors have OKHSL coordinates")
+                    } else {
+                        [0.0; 3]
+                    },
+                    encoded,
+                    hsv_cone: hsv_cone_point(hsv),
+                    distance_weight: 2.0_f64.powf(-site.influence.clamp(-4.0, 4.0)),
+                }
+            })
+            .collect();
+        let mut compiled = Self { matching, sites, blend: None };
+        if recipe.voronoi.transition.width() > 0.0 {
+            let targets = compiled.sites.iter().map(|site| site.context.target_linear).collect();
+            compiled.blend = Some(CompiledBlend::compile(recipe.voronoi.transition, targets));
         }
-        VoronoiMatching::Rgb => [
-            linear_to_srgb(pixel[0]) as f64,
-            linear_to_srgb(pixel[1]) as f64,
-            linear_to_srgb(pixel[2]) as f64,
-        ],
-        VoronoiMatching::Hsv => {
-            let encoded = [
+        if !current() { return Ok(None); }
+        Ok(Some(compiled))
+    }
+
+    fn site_coordinates(&self, site: &CompiledSite) -> [f64; 3] {
+        match self.matching {
+            VoronoiMatching::Perceptual => site.oklab,
+            VoronoiMatching::Okhsl => site.okhsl_cylinder,
+            VoronoiMatching::Rgb => site.encoded,
+            VoronoiMatching::Hsv => site.hsv_cone,
+        }
+    }
+
+    fn match_coordinates(&self, pixel: [f32; 4]) -> [f64; 3] {
+        let linear = [pixel[0], pixel[1], pixel[2]];
+        match self.matching {
+            VoronoiMatching::Perceptual => linear_rgb_to_oklab(linear),
+            VoronoiMatching::Okhsl => linear_to_okhsl_cylinder(linear.map(f64::from))
+                .expect("bounded processing pixels have OKHSL coordinates"),
+            VoronoiMatching::Rgb => linear.map(|v| f64::from(linear_to_srgb(v))),
+            VoronoiMatching::Hsv => hsv_cone_point(encoded_to_hsv(linear.map(|v| f64::from(linear_to_srgb(v))))),
+        }
+    }
+
+    /// Stable site contexts in direct coverage-index order.
+    pub fn site_contexts(&self) -> impl ExactSizeIterator<Item = &CompiledSiteContext> {
+        self.sites.iter().map(|site| &site.context)
+    }
+
+    /// Return the stable winning site index without allocating candidate storage.
+    pub fn winner_index(&self, pixel: [f32; 4]) -> Option<usize> {
+        let coordinates = match self.matching {
+            VoronoiMatching::Perceptual => linear_rgb_to_oklab([pixel[0], pixel[1], pixel[2]]),
+            VoronoiMatching::Okhsl => {
+                linear_to_okhsl_cylinder([pixel[0] as f64, pixel[1] as f64, pixel[2] as f64])
+                    .expect("bounded processing pixels have OKHSL coordinates")
+            }
+            VoronoiMatching::Rgb => [
                 linear_to_srgb(pixel[0]) as f64,
                 linear_to_srgb(pixel[1]) as f64,
                 linear_to_srgb(pixel[2]) as f64,
-            ];
-            let hsv = encoded_to_hsv(encoded);
-            hsv_cone_point(hsv)
-        }
-    };
-    sites.iter().min_by(|a, b| {
-        let metric = |site: &CompiledSite| {
-            let site_coordinates = match matching {
-                VoronoiMatching::Perceptual => site.oklab,
-                VoronoiMatching::Okhsl => site.okhsl_cylinder,
-                VoronoiMatching::Rgb => site.encoded,
-                VoronoiMatching::Hsv => site.hsv_cone,
-            };
-            distance2(coordinates, site_coordinates)
+            ],
+            VoronoiMatching::Hsv => {
+                let encoded = [
+                    linear_to_srgb(pixel[0]) as f64,
+                    linear_to_srgb(pixel[1]) as f64,
+                    linear_to_srgb(pixel[2]) as f64,
+                ];
+                let hsv = encoded_to_hsv(encoded);
+                hsv_cone_point(hsv)
+            }
         };
-        // Influence is dimensionless and scales the complete native metric, never individual
-        // axes. Each +1 halves weighted distance², expanding that site's radial reach by sqrt(2);
-        // the -4..=4 UI range therefore spans radius factors 1/4..=4 around neutral.
-        let da = metric(a) * 2.0_f64.powf(-a.influence.clamp(-4.0, 4.0));
-        let db = metric(b) * 2.0_f64.powf(-b.influence.clamp(-4.0, 4.0));
-        let scale = da.abs().max(db.abs()).max(1.0);
-        if (da - db).abs() <= scale * 1.0e-12 {
-            a.order.cmp(&b.order).then_with(|| a.id.cmp(&b.id))
-        } else {
-            da.total_cmp(&db)
-        }
-    })
+        self.sites
+            .iter()
+            .enumerate()
+            .min_by(|(_, a), (_, b)| {
+                let metric = |site: &CompiledSite| {
+                    let site_coordinates = match self.matching {
+                        VoronoiMatching::Perceptual => site.oklab,
+                        VoronoiMatching::Okhsl => site.okhsl_cylinder,
+                        VoronoiMatching::Rgb => site.encoded,
+                        VoronoiMatching::Hsv => site.hsv_cone,
+                    };
+                    distance2(coordinates, site_coordinates)
+                };
+                // Influence is dimensionless and scales the complete native metric, never individual
+                // axes. Each +1 halves weighted distance², expanding that site's radial reach by sqrt(2);
+                // the -4..=4 UI range therefore spans radius factors 1/4..=4 around neutral.
+                let da = metric(a) * a.distance_weight;
+                let db = metric(b) * b.distance_weight;
+                let scale = da.abs().max(db.abs()).max(1.0);
+                if (da - db).abs() <= scale * 1.0e-12 {
+                    a.context
+                        .order
+                        .cmp(&b.context.order)
+                        .then_with(|| a.context.id.cmp(&b.context.id))
+                } else {
+                    da.total_cmp(&db)
+                }
+            })
+            .map(|(index, _)| index)
+    }
+
+    /// Resolves a hard boundary winner by copying Target RGB and preserving straight alpha.
+    ///
+    /// Fully transparent pixels are normalized before this boundary in the processing pipeline and
+    /// never require winner resolution.
+    ///
+    /// # Panics
+    /// Panics when `winner_index` was not returned by [`Self::winner_index`] for this partition.
+    pub fn resolve_hard(&self, pixel: [f32; 4], winner_index: usize) -> [f32; 4] {
+        let target = self.sites[winner_index].context.target_linear;
+        [target[0], target[1], target[2], pixel[3]]
+    }
 }
 
 fn hsv_cone_point(hsv: [f64; 3]) -> [f64; 3] {
@@ -437,6 +409,10 @@ pub fn bounded_preview(source: &PixelImage) -> PixelImage {
     PixelImage::new(width, height, pixels).expect("preview dimensions match")
 }
 
+/// Rotates one linear-sRGB color in OKLCh using the persisted f32 operation kernel.
+///
+/// Voronoi matching intentionally retains its established f64 conversion in `voronoi`: forcing
+/// both paths through one precision would change the ordered, per-step clipping contract.
 pub fn rotate_oklch(rgb: [f32; 3], degrees: f32) -> [f32; 3] {
     if degrees.rem_euclid(360.0).abs() < f32::EPSILON {
         return rgb;

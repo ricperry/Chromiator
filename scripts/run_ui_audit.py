@@ -15,22 +15,17 @@ ROOT = Path(__file__).resolve().parents[1]
 OUT = ROOT / "tests" / "artifacts" / "audit"
 SCENARIOS = (
     "shell",
-    "threshold-inspector",
-    "threshold-dialog",
     "voronoi",
     "presets",
     "picker",
     "io-workflow",
     "narrow-core",
     "adaptive-1024",
-    "responsive-thresholds-720",
     "responsive-voronoi-720",
-    "responsive-thresholds-1024",
     "responsive-voronoi-1024",
 )
-# The expanded Threshold dialog scenario now exercises more than 200 real signal
-# events. GTK process shutdown consistently adds roughly six seconds after the
-# completion marker, so retain a hard bound with enough margin for that teardown.
+# Retained scenarios perform real widget actions and semantic readback. GTK
+# process shutdown consistently adds several seconds after the completion marker.
 TOTAL_TIMEOUT = 16.0
 STALE_TIMEOUT = 3.0
 FATAL_DIAGNOSTICS = (
@@ -102,7 +97,7 @@ def main() -> int:
     assert len(parsed) == 1 and malformed == 2
     assert fatal_diagnostics("Gtk-WARNING: synthetic audit warning") == ["Gtk-WARNING"]
     OUT.mkdir(parents=True, exist_ok=True)
-    binary = ROOT / "target" / "debug" / "threshiator"
+    binary = ROOT / "target" / "debug" / "chromiator"
     subprocess.run(["cargo", "build", "--quiet"], cwd=ROOT, check=True)
     results = []
     for scenario in SCENARIOS:
@@ -122,9 +117,8 @@ def main() -> int:
         elif scenario == "adaptive-1024":
             command += ["--window-size", "1024x600"]
         elif scenario.startswith("responsive-"):
-            method = "thresholds" if "thresholds" in scenario else "voronoi"
             size = "720x700" if scenario.endswith("-720") else "1024x600"
-            command += ["--method", method, "--window-size", size]
+            command += ["--window-size", size]
         env = os.environ.copy()
         env.setdefault("GSK_RENDERER", "cairo")
         xdg_data = OUT / "xdg" / scenario

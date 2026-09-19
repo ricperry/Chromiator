@@ -1,112 +1,124 @@
-# Threshiator
+# Chromiator
 
-Threshiator is a native GTK 4/libadwaita posterization studio for Fedora GNOME. Independent Voronoi color sites are the default creative method; variable-band RGB and HSV Thresholds are a first-class alternate. Both method states persist in a straight-alpha linear-sRGB `RGBA f32` pipeline.
+The executable is `chromiator`, projects use `.chromiator`, and application data
+is stored in `$XDG_DATA_HOME/chromiator` (normally `~/.local/share/chromiator`).
+This pre-alpha rename has no legacy extension or data-folder compatibility layer;
+existing personal data is not automatically moved or rewritten.
 
-The welcome screen offers three direct starts: **Open Image**, **Open Threshiator Project**, or **Try Spectrum Example**. The included Spectrum artwork is compiled into the native application and opens as a clean, pathless document through the same raster decoding and default Voronoi initialization used by imported images.
+Chromiator is a native Rust/GTK4 creative color-mapping application. It maps
+image colors to independently editable target colors using weighted Voronoi
+matching in color space. It is not a geometric tessellation drawing tool.
 
-The 2026-07-18 GNOME HIG milestone made the shell genuinely adaptive at the GNOME 1024×600 baseline: welcome hides document-only chrome and pipeline metadata, document actions are grouped contextually, the comparison toolbar keeps Result/Split/Source centered with Smoothing reachable, the inspector uses native control metrics and spacing, and separate Threshold/picker windows fit within a 600 px display while retaining scrollable transactional content. The completed Threshold panel keeps Working space and future-edits Link global and persistent, then uses single-open RGB/HSV component cards for Process, Bands, Automatic baseline, Lock, and Hue Origin where applicable, with each visible editor action opening its exact graph target. THR-034 and THR-036 remain open for broader document identity, export, and workspace follow-up.
+The application now focuses exclusively on Voronoi mapping. The separate
+Thresholds processor and mode-switching UI have been removed. The GTK4 shell
+adopts Toniator's canvas-first layout and grouped right inspector without a
+libadwaita dependency.
 
-## Build and run
+## Refactor status
 
-Install Rust plus the GTK 4 and libadwaita development packages, then:
+Implementation edits through the GTK4 shell conversion are present. The warning
+cleanup now builds cleanly, passes strict Clippy and 93 tests, and has received
+bounded private-Sway interaction checks. Save, drag-history, and picker follow-up
+fixes are verified; **responsive-layout finding THR-065 remains open.**
+The user accepted the current refactor, with THR-065 deferred as low priority.
+This is not a published release checkpoint.
+See `docs/BUG_HUNT_FOLLOWUP_2026-09-19.md` for current evidence and limitations.
+
+Before the final shell conversion, the architecture checkpoint passed 88 tests
+(7 library, 12 binary, 69 core). The earlier Voronoi-only checkpoint passed strict
+Clippy and an exact floating-point/coverage comparison across four matching
+spaces and two smoothing amounts. Those results do not validate subsequent
+changes. The newer bug-hunt report supersedes those build/test counts, but
+complete native workflow and performance verification remain unfinished.
+See `docs/FUNCTIONAL_AUDIT.md` and `ISSUES.md`.
+
+## Creative workflow
+
+- Open a raster image or use the Spectrum Example.
+- Edit Color mapping settings, including matching space and input smoothing.
+- Adjust Transition width to blend Target colors across color-space boundaries,
+  using Oklab or Linear RGB as the Blend space.
+- Click visible artwork to add a Color site: Source-view samples attach to the
+  original image; Result-view samples use the displayed floating-point preview
+  and remain detached. Split follows the image visible on each side.
+- Use the `+` button in Color sites to pick a detached Source color directly.
+  Select creates one undoable site with matching Source/Target; Cancel adds none.
+- Select Color sites, then edit each site's Source and Target colors.
+- Adjust influence, sampling footprint, and locks; compare Source and Result.
+- Reuse source-free presets, undo/redo authored edits, save projects, and export
+  a full-resolution result without editor markers.
+
+Source and Target are independent. Editing, moving, or resampling an existing
+Source preserves its Target; direct Source editing detaches its image position.
+The arrow button explicitly matches Target to Source and supports Undo.
+Locked sites protect their
+local edits and deletion. Sampling uses the original image rather than the
+scaled preview. RGB and HSV matching are Voronoi metrics, not Thresholds modes.
+The existing OKHSL metric remains supported internally but is not promoted in
+the creation menu.
+
+Keyboard navigation supplements Tab/Shift+Tab: F6 and Shift+F6 cycle between
+the canvas, mapping controls, and color-site list. Alt+M/S/T/B focus Matching,
+Smoothing, Transition width, and Blend space when available. Expanded sites
+provide Alt+I/P/F for Influence, Source position, and Footprint. In the picker,
+Alt+C/H focus Color model and Hex. Controls expose names and label relations
+for AT-SPI; Source and Target swatches are identified by site number.
+
+## Build and launch
+
+Use Rust/Cargo and the GTK4 development toolchain, including GLib's resource
+compiler and `pkg-config`. `build.rs` compiles the XML UI and CSS resources using
+`glib-build-tools`; Blueprint and libadwaita are not required.
 
 ```sh
 cargo run --release
+cargo run --release -- --open /path/to/image.png
 ```
 
-Checks:
+The old `--method` and `--threshold-space` options are removed and report an
+error. The archive under `archive/webapp/` is historical reference, not the
+native application's runtime.
 
-```sh
-cargo fmt --check
-cargo clippy --all-targets --all-features -- -D warnings
-cargo test
-cargo build
-```
+## Color and persistence contracts
 
-The app-owned interactive stability audit runs every scenario in a disposable GTK process with an external heartbeat watchdog:
+Processing uses straight-alpha linear-sRGB RGBA `f32`, with ICC interpretation
+at import and format-specific encoding at export. Preserve transfer functions,
+alpha, site ordering, metric definitions, and influence weighting when changing
+the engine. Input smoothing precedes mapping; ordered hue operations follow it.
+Preview smoothing is measured in preview pixels and export smoothing in source
+pixels, preserving the existing behavior.
 
-```sh
-python3 scripts/run_ui_audit.py
-```
+New projects use schema **v6** and presets use schema **v3**. Older formats are
+rejected explicitly; they are not migrated, silently reinterpreted, or rewritten.
+Keep older files if their contents are still needed.
 
-Its JSONL logs and `summary.json` are stored under `tests/artifacts/audit/`; the full coverage matrix and known manual-only paths are documented in [`docs/FUNCTIONAL_AUDIT.md`](docs/FUNCTIONAL_AUDIT.md). It exercises actual widget methods and signals for the shell, Threshold inspector/dialog, Voronoi controls, presets, picker, I/O lock, and a narrow window. It does not claim real pointer gestures or portal chooser completion.
+A required symmetric Start/Midpoint/End transition profile now supports a global
+Transition width and Oklab or Linear RGB blending. All competitive sites blend;
+there is no blend-scope selector or shared-border contact solver. Width zero
+preserves hard mapping and deterministic ties. Files containing the removed
+`blend_scope` field are rejected; there is no compatibility layer. File formats
+are experimental, not finalized. Pre-alpha format and preset cleanup is tracked
+as THR-066. The user accepted the simplification. Test cleanup is complete:
+103 tests, strict Clippy, build, three opt-in release checks, and a focused
+native transition check pass. See `docs/TRANSITION_TEST_CLEANUP.md` for current
+evidence; earlier Shared borders reports are historical.
 
-Deterministic command-driven UI evidence can be produced without pointer automation:
+## Development
 
-```sh
-cargo run --release -- --open image.png --method voronoi --view split \
-  --window-size 1180x760 --select-site 1 \
-  --screenshot evidence.png --quit-after-screenshot
-```
+The 2026-09-19 accessibility/picker follow-up passes 105 regular tests, strict
+Clippy, app build, and three opt-in release checks. Private-Sway checks verify
+site-qualified accessible names, keyboard region navigation, Source/Target
+independence, explicit matching and Undo, and the corrected saturated-blue
+OKHSL picker. See `docs/ACCESSIBILITY_VERIFICATION_2026-09-19.md` for evidence
+and remaining accessibility limitations.
 
-Supported evidence controls are `--open`/`--project`, `--example`, `--method`, `--view`, `--window-size`, `--select-site` (with `--select-group` and `--select-sample` retained as compatibility aliases), `--sampling-state`, `--hue`, `--voronoi-matching perceptual|okhsl|rgb|hsv`, `--threshold-space rgb|hsv`, `--threshold-link linked|independent`, `--threshold-component red|green|blue|hue|saturation|value`, `--threshold-bands 2..32`, `--threshold-bypass COMPONENT`, `--threshold-lock COMPONENT`, `--threshold-auto COMPONENT`, `--show-threshold-editor`, `--threshold-editor-target red|green|blue|linked-rgb|hue|saturation|value|linked-sv`, `--threshold-editor-handle boundary:N|output:N`, `--show-color-picker`, `--color-model okhsl|hsv|hsl`, `--picker-lightness 0..1`, `--screenshot`, and `--quit-after-screenshot`. The component selector also expands that component card in screenshot mode; paired with `--show-threshold-editor`, it invokes that card's real **Edit band mapping…** action. `--threshold-lock` and `--threshold-auto` are evidence-only controls for deterministic protected and automatic-baseline states. The `okhsl` matching argument is retained only for dormant developer fixtures and is not offered in the creator-facing Matching menu. Screenshot sidecars expose every independent Voronoi site's ID/order, Source, Target, Influence, lock, optional position, and sampling footprint. With no input, screenshot mode captures the welcome screen.
+`docs/ARCHITECTURE.md` describes ownership, typed edits, processing boundaries,
+and the future blending extension point. `docs/FUNCTIONAL_AUDIT.md` distinguishes
+completed checkpoint evidence from pending final checks. `ISSUES.md` retains
+stable issue IDs and milestone status.
 
-The historical browser demonstrator is runnable from [`archive/webapp`](archive/webapp/README.md).
-
-## Current image contract
-
-The finalized raster input set is PNG, JPEG, TIFF, WebP, BMP, and single-frame GIF, selected from file contents rather than the extension. SVG, animated GIF, and every other input format are rejected explicitly. Grayscale and grayscale-alpha inputs expand to RGBA. Untagged color samples are assumed encoded sRGB. Tagged RGB inputs are transformed from their embedded ICC profile to encoded sRGB with relative-colorimetric intent before conversion to the canonical linear-sRGB `f32` working space; alpha remains straight and is preserved. Invalid or non-RGB embedded profiles fail with an actionable error instead of being silently treated as sRGB.
-
-Projects record whether input was untagged sRGB or converted from an embedded RGB profile. Input profile bytes remain present in the embedded original source; editable working pixels are canonical bounded linear sRGB. Display conversion is the only preview quantization step: linear straight-alpha pixels become straight encoded-sRGB RGBA8 for GTK, preserving RGB accuracy even at low alpha. Display-profile selection and the final monitor transform belong to the OS, window manager, and compositor.
-
-Exports currently supported:
-
-| Destination | Samples | Color representation |
-| --- | --- | --- |
-| PNG | 8-bit integer per channel RGBA | encoded sRGB, tagged sRGB |
-| PNG | 16-bit integer per channel RGBA | encoded sRGB, tagged sRGB |
-| OpenEXR | 32-bit float per channel RGBA | linear sRGB values; no ICC claim |
-
-JPEG, WebP, TIFF, BMP, GIF, and other export formats are intentionally unavailable rather than silently down-converted. PNG is the color-managed sRGB delivery format; OpenEXR is an explicitly linear-sRGB high-precision intermediate and does not claim HDR or a display profile. All project and image writes use a temporary file in the destination directory followed by atomic replacement.
-
-## Processing model
-
-New images deterministically initialize up to four materially distinct independent Voronoi sites from a bounded histogram of the complete source distribution, clustered directly in OKLab. The histogram compresses canonical linear-sRGB values into a finite candidate set but never fills an artificial OKLab volume; final automatic sites are actual full-resolution source pixels and begin as Point samples. This avoids preview-phase aliasing that could discard alternating or checkerboard colors. Each site owns a canonical linear-sRGB `f32` Source, its own Target, Influence, lock, stable ID/order, optional normalized marker position, and sampling footprint. Manual Source sampling accepts any positive footprint alpha and computes alpha-weighted RGB; new and resampled sites begin with Target equal to Source. Point, 3×3, and 5×5 footprints are available.
-
-Processing derives matching coordinates from each canonical Source value; no per-space coordinate cache is serialized. **Perceptual (OKLab)** remains exactly Cartesian OKLab `dL² + da² + db²`, with no axis normalization, stretching, or UI-space distance. RGB compares encoded-sRGB components. HSV uses the endpoint-aware cone `(S·V·cos(H), S·V·sin(H), V)`: multiplying the radial Hue/Saturation plane by Value makes visible chroma and Hue influence collapse naturally toward black instead of allowing relative Saturation to overwhelm darkness. The dormant **Perceptual (OKHSL)** implementation remains available to developer fixtures as a seam-safe unit cylinder `(S·cos(2πH), S·sin(2πH), L)` but is not offered in the Matching menu. Influence retains the dimensionless weighted rule `distance² × 2^-clamp(Influence,-4,4)` across the complete selected metric rather than per axis; each +1 expands radial reach by `√2`, and the range spans radius factors 1/4–4. Ties resolve by stable order then ID. Every visible pixel is assigned directly to the winning site's Target; coverage is reported by site ID. Transparent pixels remain canonical.
-
-Source and Target are edited separately with the transactional color picker. Replacing Source by drag, nudge, resample, footprint change, or direct edit always resets Target to the new Source; a direct Source edit also detaches the old image position. Lock protects Source, Target, Influence, footprint, marker movement, and deletion without promising a fixed boundary when neighboring sites or the global matching mode change. Lock/unlock marks the project dirty but schedules no image work. User presets can save and reapply the complete processing recipe without source artwork or image-specific marker positions. Document Undo/Redo covers every committed recipe and sampling mutation, restores the complete recipe plus site selection/detail state, coalesces continuous Smooth/Influence/marker gestures, cancels armed sampling on restoration, and schedules one latest-result preview. Save and Save As retain history while moving the clean savepoint to the current recipe.
-
-One **Preset** row lists 13 compiled built-ins first in fixed order, followed by alphabetized user presets. Every label identifies its engine with the readable suffix **— Threshold** or **— Voronoi**; a single adjacent menu contains Save Current Preset, Refresh Presets, and Open Presets Folder. A clean open or recipe-diverged document displays neutral **Presets…** rather than claiming an unrelated stored preset. The Threshold catalog keeps Comic Book, Duotone Blue, Vintage Photo, Noir, and Pop Art, then adds the HSV-based Hue Poster, Neon Shadows, and Pastel Bands. The Voronoi catalog adds Ink & Paper, Desert Dusk, Blueprint, Arcade Four, and the HSV-matched Night Neon. Built-ins use the final native Recipe model directly and never write into the user preset folder. Selection applies immediately as one transaction, while model refresh and an already-matching selection do nothing. The header exposes compact Undo/Redo buttons with Ctrl+Z/Ctrl+Shift+Z; their sensitivity follows the document history. The mapping window can reset only an unlocked selected component. The Threshold inspector can reset the active Working space or complete Threshold method with confirmation while preserving locked mappings.
-
-**Smooth source** is a common integer setting from 0–10 applied before either Threshold or Voronoi. It uses a separable Gaussian in authoritative linear-f32 pixels, filtering premultiplied RGB and alpha before returning to straight alpha. Full export interprets the amount in source pixels. The bounded interactive preview currently interprets it in preview pixels, intentionally favoring stable interactive cost; downscaled previews can therefore look smoother than the full-resolution result. Its serialized location is `threshold.input_smoothing`, but its defined behavior is global.
-
-The inspector is a compact desktop workspace rather than a scrolling preferences page. **Method** is one collapsible section containing the Voronoi/Threshold toggle, immediately applied Presets, and Voronoi-only Matching. The active method section is independently collapsible; **Color sites** expands into the remaining sidebar height and scrolls its compact rows internally. Every numbered site is one accordion tile with aligned Source→Target swatches, attachment/coverage, lock, and a disclosure chevron. At most one tile is open; when selection moves while details are open, the details move with it. The concise details contain Influence, Source position, Footprint, and Delete without exposing internal marker IDs or normalized coordinates. Clicking either swatch opens the transactional picker. Clicking empty visible artwork creates a site, and clicking within a marker's fixed 14-pixel hit radius selects it. There is no separate Add Site button, and Threshold mode never creates or displays Voronoi sites.
-
-The canvas toolbar owns Result/Split/Source and the common **Smoothing** control. Split draws a visible divider and grip directly over the artwork; dragging within 12 display pixels moves it, while clicks and site drags elsewhere retain their normal meaning. With canvas focus, Left/Right move the divider by 1%, Shift uses 10%, and Home/End select the bounds. No second slider appears below the image. A native bottom toolbar keeps transient status at the far left and creator-readable **32-bit float · Linear sRGB** plus profile summary at the far right; the full alpha/profile pipeline remains in its tooltip. The downstream common Hue Rotation recipe value remains project/preset/CLI-compatible but is intentionally absent from the main inspector in every mode.
-
-Thresholds retain independent RGB and HSV states when the Working space changes. The compact Threshold inspector keeps **Working space** and future-edits **Link** global, then presents three single-open component cards with concise `3 bands · Processing · Locked`-style summaries. Each card owns Process, Bands, a one-click **Automatic baseline**, Lock, Hue Origin for Hue, and an exact component editor action. Automatic baseline preserves the current Band count: RGB, Saturation, and Value use equal-width input bands with Output levels from 0 through 1, while Hue uses equal circular bands whose center levels wrap across the visible seam without changing Hue Origin. It preserves Process and uses ordinary Link propagation only for eligible unlocked peers; a locked or already-automatic source is a no-op. Every editor action opens that exact individual target, while the conditional linked editor opens **RGB linked** or **S + V linked** when Link is enabled. Reset remains under disclosure.
-
-The authoritative mapping workspace is a real modal transient window with its own movable title bar. Its graph-first layout places Target, Link, and icon-only Reset together, followed by one short plot hint, the transfer plot, precise handle editing, and compact two-column Process/Bands/Lock/Hue-origin tiles. The one-shot Copy action appears only for an individual linkable target whose peer mapping differs. Individual targets remain available while Link is on: Red, Green, Blue, Hue, Saturation, and Value each show only their own histogram. Linked RGB overlays R/G/B, while linked S + V shows separate Saturation and Value series. Linked targets use Red and Saturation as their visible editing anchors; Process and Lock stay hidden there because those flags remain per-component, and tooltip/accessibility text identifies mixed peer state. Vertical blue handles edit Boundaries and horizontal red handles edit each Band's Output. Hue origin rotates the 0-degree seam before mapping. Pointer motion changes only the dialog draft and schedules one preview on release. Compact local Undo/Redo buttons and Ctrl+Z/Ctrl+Shift+Z operate only on the dialog draft and report feedback in the modal title bar. Done retains the live result as one document transaction; Cancel, Escape, or window close restores the complete opening Threshold state and dirty flag with one restoring preview only when the state changed.
-
-The RGB mapping plot includes a bounded 512-bin, alpha-weighted encoded-sRGB histogram of the authoritative full-resolution source. It is computed off the GTK thread while the document opens and intentionally describes source density before Smooth. Histogram visibility follows the selected semantic target rather than the Link policy: choosing Red while Link is on still shows only Red, while **RGB linked** overlays the three distributions without combining them, using separate fills, outlines, dash patterns, and channel letters.
-
-HSV uses the same source-owned cache. Hue density excludes achromatic pixels, rotates around the editable Hue origin, and sits between a circular input strip and an output strip that shows mapped and bypassed bands across the visible 0-degree/360-degree seam. Saturation uses an alpha-times-saturation circular mean for its identified representative source hue, with a deterministic 0-degree fallback; Value uses neutral black-to-bright ramps. Linked Saturation and Value remain separate labeled dashed/dotted distributions and strips rather than being collapsed into one curve.
-
-A value exactly on a Boundary belongs to the lower Band. Increasing Bands splits the selected Output interval, or the widest interval, at its midpoint and duplicates the Output so processed pixels do not change. Decreasing removes the selected Boundary, or the deterministic least-output-error adjacent pair; the larger interval's Output wins and a tie keeps the lower interval. Ordinary count changes never recreate an evenly spaced mapping. Link RGB and Link Saturation & Value copy future mapping and Band edits only to unlocked peers; Process/Bypass flags and locks remain independent, Hue never links, and toggling Link neither copies mappings nor schedules a preview. The explicit one-shot button names its direction, such as **Copy Red to Green and Blue** or **Copy Saturation to Value**. Locked destination names are struck through immediately, while the accessible label and description explicitly name writable and skipped channels; activation also reports any destinations it skipped. A per-component **Lock mapping** protects Bands, Boundaries, Outputs, Reset, incoming Link propagation, incoming copies, and Hue-origin editing while leaving inspection and Process/Bypass available.
-
-New RGB work quantizes floating-point encoded sRGB and converts directly back to canonical linear-sRGB `f32`, with no intermediate integer quantization. HSV operates over encoded sRGB: S and V are linear from 0 to 1, hue is circular and shown in degrees, and hue quantization cannot tint achromatic input. Bypassed components survive the required working-space round trip within floating-point tolerance. Alpha remains straight and preserved; transparent RGB is canonicalized. Smooth source is implemented globally; alpha quantization remains deferred. The retained project/preset Hue Rotation value still uses floating-point degrees in OKLCH; out-of-gamut results are clipped to linear sRGB, but it is no longer a main-inspector control. Creative recipe changes mark the document dirty; comparison and divider changes do not.
-
-Interactive previews are bounded to 1600 pixels on their longest edge and use cheaply shared pixel storage, while attached site Source colors always come from the authoritative full-resolution image. Saving and full-resolution export keep the authoritative source and embedded bytes intact; export reprocesses that full-resolution source through the active method off the GTK main thread. Markers and selection affordances never export.
-
-Active open, save, and full-resolution export jobs can be cancelled. Third-party codec calls are not themselves preemptible; cancellation invalidates the job immediately, discards any codec result or temporary output, and prevents destination replacement.
-
-While an open, save, or export job owns the document, the document workspace is insensitive and footer Cancel remains available. A file operation is rejected while a modal creative dialog is open, so the dialog can never hide an unreachable job-cancellation control. This prevents edits from racing a stale save snapshot or an incoming document replacement. A second job request is also rejected gracefully rather than panicking. The Stability & Observability milestone removed callback-driven model recreation from the Threshold target and Voronoi Source sample dropdowns; both now use stable, idempotently synchronized models.
-
-## Projects and resuming work
-
-`.threshiator` project v5 and human-readable preset JSON v2 are the finalized native formats and the only versions this build accepts. A project is a strict ZIP archive containing exactly `manifest.json` and `source/original`; the manifest stores source interpretation, the complete Recipe, independent Voronoi sites, both Threshold working spaces and locks, the active method, common finishing values, and export defaults. Presets contain the complete processing recipe without artwork, paths, export destinations, UI state, or image-specific marker positions. Missing current fields, unknown fields, older pre-release versions, browser-demonstrator JSON, and extra project archive entries are rejected rather than migrated. Scanning or applying an incompatible user preset never rewrites, renames, or deletes it.
-
-Open Image, Open Project, and Try Spectrum Example share one replacement guard. A dirty document offers Save, Discard, or Cancel. Save performs the requested replacement only after a successful project write; a cancelled or failed save keeps the current document.
-
-## Output color picker
-
-Click a Source or Target color swatch to open Threshiator's draft color picker in its own modal transient window. OKHSL is the default model; HSV and HSL remain available without changing the underlying canonical draft, which remains floating-point linear sRGB. All three models resolve to the same canonical encoded-sRGB numbers through one `f64` transfer path, and merely switching models never mutates the color. Each model retains its own latent Hue at neutrals. HSV/HSL operate over encoded sRGB. OKHSL maps its complete Hue/Saturation disk into bounded sRGB, so there are no unexplained out-of-gamut holes. HSV and HSL planes render at the widget's device-pixel allocation; the more expensive OKHSL plane uses a bounded smoothly scaled raster. All three share a vector-clipped circular edge rather than a coarse tile grid. Picker model and Voronoi Matching are independent choices: selecting OKHSL in the picker does not silently change the recipe. Hex accepts `#RGB` and `#RRGGBB`; displaying hex never replaces the higher-precision draft.
-
-The three slider/precision rows stay synchronized with the color plane and hex entry. Achromatic edits retain latent hue. The wheel is focusable: arrows adjust it, Shift provides fine adjustment, and Home returns to neutral. Original and New swatches make the pending change explicit. The picker has its own visible local Undo/Redo controls and shortcuts; wheel and slider motion coalesces by interaction while exact edits remain useful discrete entries. Select creates one document transaction only when the canonical color changes; Cancel, Escape, or closing the dialog creates none. Source alpha is not editable and passes through unchanged.
-
-## Color and display boundary
-
-Threshiator is a bounded-sRGB palette-reduction tool. OKHSL is the default artist-facing picker, with HSV and HSL retained as alternatives. Voronoi offers Cartesian OKLab, encoded-sRGB RGB, and endpoint-aware HSV matching. The experimental OKHSL matching implementation remains dormant in the codebase for possible future research but is not a creator-facing choice.
-
-The application does not inspect displays, select monitor profiles, query colord, implement HDR transfer functions, or promise compositor behavior. GTK supplies an encoded-sRGB preview and the OS/window manager/compositor owns display delivery. PNG 8/16 is the declared sRGB result; linear-sRGB OpenEXR is available when a downstream color application needs a high-precision intermediate. Any display-specific correction, wide-gamut conversion, grading, or HDR preparation belongs in that purpose-built downstream application. HWB, OKLCH, and additional picker models are not planned merely for completeness.
+Project orchestration targets `gpt-6-astra` at high reasoning effort through
+`.codex/config.toml` and the `chromiator-orchestrator` skill. The adopted
+`gtk-wayland-debug` skill runs native checks in a private Sway session without
+controlling the normal GNOME desktop. Automated Sway evidence is not human
+GNOME/Mutter acceptance.

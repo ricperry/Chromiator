@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=common.sh
+source "$SCRIPT_DIR/common.sh"
+load_session
+
+if (( $# > 1 )); then
+    die "usage: screenshot [OUTPUT.png]"
+fi
+
+if (( $# == 1 )); then
+    output="$1"
+    if [[ "$output" != /* ]]; then
+        output="$(active_evidence_dir)/$output"
+    fi
+else
+    output="$(active_evidence_dir)/screenshot-$(date +%H%M%S).png"
+fi
+mkdir -p "$(dirname "$output")"
+grim -o "$CHROMIATOR_SWAY_OUTPUT" "$output"
+printf '%s\n' "$output"

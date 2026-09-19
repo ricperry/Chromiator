@@ -54,7 +54,7 @@ pub fn atomic_write_checked(
 ) -> Result<()> {
     let parent = path.parent().unwrap_or_else(|| Path::new("."));
     let mut temporary = tempfile::Builder::new()
-        .prefix(".threshiator-")
+        .prefix(".chromiator-")
         .tempfile_in(parent)
         .with_context(|| format!("cannot create temporary output in {}", parent.display()))?;
     write(temporary.path())?;

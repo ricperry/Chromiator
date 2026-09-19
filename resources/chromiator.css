@@ -1,0 +1,116 @@
+.chromiator-root {
+  background: @theme_bg_color;
+}
+
+.chromiator-viewer {
+  min-width: 1px;
+  min-height: 1px;
+  padding: 12px;
+  background-image: radial-gradient(circle at 50% 42%, alpha(@theme_fg_color, 0.055), transparent 62%);
+}
+
+.chromiator-canvas {
+  min-width: 1px;
+  min-height: 1px;
+  border: 1px solid @borders;
+  border-radius: 10px;
+  background: alpha(@theme_fg_color, 0.025);
+}
+
+.chromiator-inspector {
+  min-width: 280px;
+  background: @theme_bg_color;
+  border-left: 1px solid @borders;
+}
+
+.chromiator-inspector-content {
+  padding: 4px;
+}
+
+.chromiator-inspector-group {
+  padding: 0px;
+}
+
+.chromiator-control-row {
+  padding: 6px 2px;
+}
+
+.chromiator-status {
+  padding: 6px 12px;
+  border-top: 1px solid @borders;
+  background: @theme_bg_color;
+}
+
+.chromiator-welcome-card {
+  padding: 22px;
+  border: 1px solid @borders;
+  border-radius: 12px;
+  background: alpha(@theme_fg_color, 0.035);
+}
+
+.chromiator-startup-panel {
+  padding: 18px;
+  border-radius: 10px;
+  background: alpha(@theme_fg_color, 0.025);
+}
+
+.chromiator-recent-project {
+  padding: 10px 12px;
+}
+
+.chromiator-splash-window-controls {
+  border-radius: 8px;
+  background: alpha(black, 0.55);
+  color: white;
+}
+
+.chromiator-splash-window-controls button {
+  color: white;
+}
+
+.creative-focus:focus-visible {
+  outline: 2px solid @theme_selected_bg_color;
+  outline-offset: -3px;
+}
+
+/* The color raster sits behind a real GTK scale, preserving native input. */
+scale.picker-channel-scale {
+  padding: 4px 8px;
+}
+
+scale.picker-channel-scale trough {
+  min-height: 28px;
+  border-radius: 5px;
+  border: none;
+  background: transparent;
+  box-shadow: inset 0 0 0 1px alpha(@theme_fg_color, 0.25);
+}
+
+scale.picker-channel-scale highlight {
+  /* Avoid negative theme sizing after removing the native highlight border. */
+  min-width: 0;
+  min-height: 28px;
+  margin: 0;
+  border: none;
+  background: transparent;
+  box-shadow: none;
+}
+
+scale.picker-channel-scale slider {
+  min-width: 10px;
+  min-height: 32px;
+  margin: -3px -6px;
+  border-radius: 4px;
+  border: 2px solid white;
+  background: alpha(black, 0.12);
+  box-shadow: 0 0 0 1px alpha(black, 0.85);
+}
+
+scale.picker-channel-scale:focus-visible trough {
+  outline: 2px solid @theme_selected_bg_color;
+  outline-offset: 3px;
+}
+
+spinbutton.picker-channel-value {
+  font-variant-numeric: tabular-nums;
+}

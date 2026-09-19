@@ -1,0 +1,74 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=common.sh
+source "$SCRIPT_DIR/common.sh"
+load_session
+
+if [[ -r "$APP_UNIT_FILE" ]]; then
+    current_unit="$(<"$APP_UNIT_FILE")"
+    unit_is_active "$current_unit" && die "Chromiator is already running ($current_unit); use app-restart"
+    rm -f -- "$APP_UNIT_FILE" "$APP_PID_FILE"
+elif [[ -r "$APP_PID_FILE" ]]; then
+    current_pid="$(<"$APP_PID_FILE")"
+    process_is_alive "$current_pid" && die "Chromiator is already running (pid $current_pid); use app-restart"
+    rm -f -- "$APP_PID_FILE"
+fi
+
+binary="${CHROMIATOR_APP_BINARY:-$REPO_ROOT/target/debug/chromiator}"
+[[ -x "$binary" ]] || die "Chromiator binary is not executable: $binary; build the bounded target first"
+if (( $# > 1 )); then
+    die "usage: app-start [PATH]"
+fi
+
+run_id="$(date +%Y%m%d-%H%M%S)-$$"
+evidence_dir="$EVIDENCE_ROOT/ui-run-$run_id"
+mkdir -p "$evidence_dir"
+printf '%s\n' "$evidence_dir" >"$ACTIVE_EVIDENCE_FILE"
+
+printf '%s\n' "$AT_SPI_BUS_ADDRESS" >"$evidence_dir/atspi-bus.txt"
+
+app_args=()
+(( $# == 1 )) && app_args+=(--open "$1")
+app_unit="chromiator-debug-app-$run_id.service"
+
+user_systemd_run \
+    --unit="$app_unit" \
+    --collect \
+    --working-directory="$REPO_ROOT" \
+    --property=Type=simple \
+    --property=Restart=no \
+    --property="StandardOutput=append:$evidence_dir/app.stdout.log" \
+    --property="StandardError=append:$evidence_dir/app.stderr.log" \
+    --setenv="XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR" \
+    --setenv="WAYLAND_DISPLAY=$WAYLAND_DISPLAY" \
+    --setenv="DBUS_SESSION_BUS_ADDRESS=$DBUS_SESSION_BUS_ADDRESS" \
+    --setenv="AT_SPI_BUS_ADDRESS=$AT_SPI_BUS_ADDRESS" \
+    --setenv=GDK_BACKEND=wayland \
+    --setenv="GSK_RENDERER=${CHROMIATOR_GSK_RENDERER:-cairo}" \
+    --setenv=GTK_A11Y=atspi \
+    --setenv="RUST_BACKTRACE=${RUST_BACKTRACE:-full}" \
+    --setenv="WAYLAND_DEBUG=${WAYLAND_DEBUG:-}" \
+    "$binary" "${app_args[@]}" \
+    >/dev/null
+app_pid="$(user_systemctl show "$app_unit" --property=MainPID --value)"
+printf '%s\n' "$app_pid" >"$APP_PID_FILE"
+printf '%s\n' "$app_unit" >"$APP_UNIT_FILE"
+
+accessible_ready=0
+for attempt in {1..100}; do
+    unit_is_active "$app_unit" || die "Chromiator exited during startup; inspect $evidence_dir/app.stderr.log"
+    if env DBUS_SESSION_BUS_ADDRESS="$DBUS_SESSION_BUS_ADDRESS" \
+        python3 "$SCRIPT_DIR/atspi_tool.py" find Chromiator --application Chromiator --limit 1 \
+        >/dev/null 2>&1; then
+        accessible_ready=1
+        break
+    fi
+    sleep 0.1
+done
+
+unit_is_active "$app_unit" || die "Chromiator exited during startup"
+(( accessible_ready == 1 )) || die "Chromiator's AT-SPI tree did not appear; inspect the app and AT-SPI logs"
+printf 'Chromiator started (pid %s, unit %s)\n' "$app_pid" "$app_unit"
+printf 'evidence: %s\n' "$evidence_dir"

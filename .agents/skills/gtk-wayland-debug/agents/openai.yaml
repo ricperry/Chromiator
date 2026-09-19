@@ -1,0 +1,4 @@
+interface:
+  display_name: "GTK Wayland Debug"
+  short_description: "Debug Chromiator in private Wayland sessions"
+  default_prompt: "Use $gtk-wayland-debug to launch Chromiator in an isolated Wayland session and collect semantic, visual, and diagnostic evidence."

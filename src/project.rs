@@ -11,7 +11,7 @@ use crate::export::atomic_write_checked;
 use crate::raster;
 use crate::scheduler::JobToken;
 
-const PROJECT_VERSION: u32 = 5;
+const PROJECT_VERSION: u32 = 6;
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -48,16 +48,9 @@ fn save_impl(
     }
     document
         .recipe
-        .threshold
         .validate()
         .map_err(anyhow::Error::msg)
-        .context("cannot save invalid Threshold state")?;
-    document
-        .recipe
-        .voronoi
-        .validate()
-        .map_err(anyhow::Error::msg)
-        .context("cannot save invalid Voronoi state")?;
+        .context("cannot save invalid processing recipe")?;
     document
         .export_defaults
         .validate()
@@ -131,14 +124,8 @@ pub fn open(path: &Path) -> Result<Document> {
     }
     manifest
         .recipe
-        .threshold
         .validate()
-        .map_err(|message| anyhow::anyhow!("invalid Threshold state in project: {message}"))?;
-    manifest
-        .recipe
-        .voronoi
-        .validate()
-        .map_err(|message| anyhow::anyhow!("invalid Voronoi state in project: {message}"))?;
+        .map_err(|message| anyhow::anyhow!("invalid processing recipe in project: {message}"))?;
     manifest
         .export_defaults
         .validate()

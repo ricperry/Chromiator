@@ -1,0 +1,238 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=common.sh
+source "$SCRIPT_DIR/common.sh"
+
+for command_name in sway swaymsg wayvnc dbus-daemon gdbus systemctl systemd-run rg; do
+    require_command "$command_name"
+done
+
+if [[ -r "$SESSION_ENV" ]]; then
+    # shellcheck disable=SC1090
+    source "$SESSION_ENV"
+    if unit_is_active "${CHROMIATOR_SWAY_UNIT:-}"; then
+        die "a private headless Sway session is already active ($CHROMIATOR_SWAY_UNIT)"
+    fi
+    die "stale session state exists; run scripts/session-stop before starting again"
+fi
+
+width="${CHROMIATOR_WAYLAND_WIDTH:-1440}"
+height="${CHROMIATOR_WAYLAND_HEIGHT:-1000}"
+port="${CHROMIATOR_VNC_PORT:-5901}"
+[[ "$width" =~ ^[1-9][0-9]*$ ]] || die "invalid CHROMIATOR_WAYLAND_WIDTH: $width"
+[[ "$height" =~ ^[1-9][0-9]*$ ]] || die "invalid CHROMIATOR_WAYLAND_HEIGHT: $height"
+[[ "$port" =~ ^[0-9]+$ ]] && (( port >= 1024 && port <= 65535 )) || die "invalid CHROMIATOR_VNC_PORT: $port"
+
+mkdir -p "$STATE_DIR" "$EVIDENCE_ROOT"
+run_id="$(date +%Y%m%d-%H%M%S)-$$"
+host_runtime_root="${XDG_RUNTIME_DIR:-/tmp}"
+[[ -d "$host_runtime_root" && -w "$host_runtime_root" ]] || die "runtime root is not writable: $host_runtime_root"
+runtime_dir="$(mktemp -d -p "$host_runtime_root" chromiator-debug.XXXXXX)"
+chmod 700 "$runtime_dir"
+dbus_log="$STATE_DIR/dbus-$run_id.log"
+atspi_log="$STATE_DIR/atspi-$run_id.log"
+sway_log="$STATE_DIR/sway-$run_id.log"
+wayvnc_log="$STATE_DIR/wayvnc-$run_id.log"
+sway_config="$STATE_DIR/sway-$run_id.conf"
+wayvnc_config="$STATE_DIR/wayvnc-$run_id.conf"
+dbus_address="unix:path=$runtime_dir/session-bus"
+sway_socket="$runtime_dir/sway-ipc.sock"
+wayvnc_socket="$runtime_dir/wayvncctl"
+output_name="HEADLESS-1"
+dbus_unit="chromiator-debug-dbus-$run_id.service"
+atspi_unit="chromiator-debug-atspi-$run_id.service"
+sway_unit="chromiator-debug-sway-$run_id.service"
+wayvnc_unit="chromiator-debug-wayvnc-$run_id.service"
+
+{
+    printf 'xwayland disable\n'
+    printf 'output %s mode --custom %sx%s@60Hz\n' "$output_name" "$width" "$height"
+    printf 'output %s position 0 0 scale 1\n' "$output_name"
+    printf 'output %s background #202020 solid_color\n' "$output_name"
+    printf 'workspace 1 output %s\n' "$output_name"
+    printf 'default_border pixel 1\n'
+    printf 'default_floating_border pixel 1\n'
+    printf 'focus_follows_mouse no\n'
+    printf 'mouse_warping none\n'
+} >"$sway_config"
+chmod 600 "$sway_config"
+
+{
+    printf 'address=127.0.0.1\n'
+    printf 'port=%s\n' "$port"
+    printf 'enable_auth=false\n'
+    printf 'xkb_layout=us\n'
+} >"$wayvnc_config"
+chmod 600 "$wayvnc_config"
+
+WLR_BACKENDS=headless WLR_LIBINPUT_NO_DEVICES=1 WLR_HEADLESS_OUTPUTS=1 \
+    sway --validate --config "$sway_config" >/dev/null
+
+cleanup_failed_start() {
+    user_systemctl stop "$wayvnc_unit" 2>/dev/null || true
+    user_systemctl stop "$sway_unit" 2>/dev/null || true
+    user_systemctl stop "$atspi_unit" 2>/dev/null || true
+    user_systemctl stop "$dbus_unit" 2>/dev/null || true
+}
+trap cleanup_failed_start ERR INT TERM
+
+user_systemd_run \
+    --unit="$dbus_unit" \
+    --collect \
+    --property=Type=simple \
+    --property=Restart=no \
+    --property="StandardOutput=append:$dbus_log" \
+    --property="StandardError=append:$dbus_log" \
+    --setenv="XDG_RUNTIME_DIR=$runtime_dir" \
+    dbus-daemon --session --nofork --nopidfile --address="$dbus_address" \
+    >/dev/null
+dbus_pid="$(user_systemctl show "$dbus_unit" --property=MainPID --value)"
+
+for attempt in {1..100}; do
+    [[ -S "$runtime_dir/session-bus" ]] && break
+    unit_is_active "$dbus_unit" || die "private D-Bus session failed; inspect $dbus_log"
+    sleep 0.05
+done
+[[ -S "$runtime_dir/session-bus" ]] || die "private D-Bus socket did not become ready"
+
+atspi_reply="$(env \
+    XDG_RUNTIME_DIR="$runtime_dir" \
+    DBUS_SESSION_BUS_ADDRESS="$dbus_address" \
+    gdbus call --session --dest org.a11y.Bus --object-path /org/a11y/bus \
+    --method org.a11y.Bus.GetAddress)"
+atspi_address="${atspi_reply#*\'}"
+atspi_address="${atspi_address%%\'*}"
+[[ "$atspi_address" == unix:* ]] || die "private AT-SPI bus returned an invalid address: $atspi_reply"
+
+user_systemd_run \
+    --unit="$atspi_unit" \
+    --collect \
+    --property=Type=simple \
+    --property=Restart=no \
+    --property="StandardOutput=append:$atspi_log" \
+    --property="StandardError=append:$atspi_log" \
+    --setenv="XDG_RUNTIME_DIR=$runtime_dir" \
+    --setenv="DBUS_SESSION_BUS_ADDRESS=$dbus_address" \
+    --setenv="AT_SPI_BUS_ADDRESS=$atspi_address" \
+    /usr/libexec/at-spi2-registryd \
+    >/dev/null
+atspi_pid="$(user_systemctl show "$atspi_unit" --property=MainPID --value)"
+
+atspi_ready=0
+for attempt in {1..100}; do
+    if env AT_SPI_BUS_ADDRESS="$atspi_address" \
+        gdbus call --address "$atspi_address" --dest org.freedesktop.DBus \
+        --object-path /org/freedesktop/DBus --method org.freedesktop.DBus.NameHasOwner \
+        org.a11y.atspi.Registry 2>/dev/null | rg -q 'true'; then
+        atspi_ready=1
+        break
+    fi
+    unit_is_active "$atspi_unit" || die "private AT-SPI registry failed; inspect $atspi_log"
+    sleep 0.05
+done
+(( atspi_ready == 1 )) || die "private AT-SPI registry name did not become ready; inspect $atspi_log"
+
+user_systemd_run \
+    --unit="$sway_unit" \
+    --collect \
+    --property=Type=simple \
+    --property=Restart=no \
+    --property="StandardOutput=append:$sway_log" \
+    --property="StandardError=append:$sway_log" \
+    --setenv="XDG_RUNTIME_DIR=$runtime_dir" \
+    --setenv="DBUS_SESSION_BUS_ADDRESS=$dbus_address" \
+    --setenv="SWAYSOCK=$sway_socket" \
+    --setenv=WLR_BACKENDS=headless \
+    --setenv=WLR_HEADLESS_OUTPUTS=1 \
+    --setenv=WLR_LIBINPUT_NO_DEVICES=1 \
+    --setenv=WLR_RENDERER=pixman \
+    --setenv=GTK_A11Y=atspi \
+    sway --config "$sway_config" --verbose \
+    >/dev/null
+sway_pid="$(user_systemctl show "$sway_unit" --property=MainPID --value)"
+
+wayland_display=""
+for attempt in {1..200}; do
+    wayland_display="$(find "$runtime_dir" -maxdepth 1 -type s -name 'wayland-*' -printf '%f\n' | head -n 1)"
+    if [[ -n "$wayland_display" && -S "$sway_socket" ]]; then
+        break
+    fi
+    unit_is_active "$sway_unit" || die "headless Sway failed; inspect $sway_log"
+    sleep 0.05
+done
+[[ -n "$wayland_display" && -S "$runtime_dir/$wayland_display" ]] || die "headless Wayland socket did not become ready"
+[[ -S "$sway_socket" ]] || die "Sway IPC socket did not become ready"
+
+if ! env SWAYSOCK="$sway_socket" swaymsg --raw --type get_outputs \
+    | rg -q '"name":[[:space:]]*"HEADLESS-1"'; then
+    die "Sway did not create the expected HEADLESS-1 output; inspect $sway_log"
+fi
+
+user_systemd_run \
+    --unit="$wayvnc_unit" \
+    --collect \
+    --property=Type=simple \
+    --property=Restart=no \
+    --property="StandardOutput=append:$wayvnc_log" \
+    --property="StandardError=append:$wayvnc_log" \
+    --setenv="XDG_RUNTIME_DIR=$runtime_dir" \
+    --setenv="WAYLAND_DISPLAY=$wayland_display" \
+    wayvnc \
+    --config="$wayvnc_config" \
+    --output="$output_name" \
+    --disable-resizing \
+    --render-cursor \
+    --seat=seat0 \
+    --socket="$wayvnc_socket" \
+    --log-level=info \
+    127.0.0.1 "$port" \
+    >/dev/null
+wayvnc_pid="$(user_systemctl show "$wayvnc_unit" --property=MainPID --value)"
+
+for attempt in {1..200}; do
+    [[ -S "$wayvnc_socket" ]] && break
+    unit_is_active "$wayvnc_unit" || die "WayVNC failed; inspect $wayvnc_log"
+    sleep 0.05
+done
+[[ -S "$wayvnc_socket" ]] || die "WayVNC control socket did not become ready"
+
+started_at="$(date --iso-8601=seconds)"
+{
+    printf 'XDG_RUNTIME_DIR=%q\n' "$runtime_dir"
+    printf 'WAYLAND_DISPLAY=%q\n' "$wayland_display"
+    printf 'SWAYSOCK=%q\n' "$sway_socket"
+    printf 'DBUS_SESSION_BUS_ADDRESS=%q\n' "$dbus_address"
+    printf 'AT_SPI_BUS_ADDRESS=%q\n' "$atspi_address"
+    printf 'GTK_A11Y=%q\n' atspi
+    printf 'CHROMIATOR_HOST_XDG_RUNTIME_DIR=%q\n' "$HOST_XDG_RUNTIME_DIR"
+    printf 'CHROMIATOR_HOST_DBUS_SESSION_BUS_ADDRESS=%q\n' "$HOST_DBUS_SESSION_BUS_ADDRESS"
+    printf 'CHROMIATOR_VNC_SERVER=%q\n' "127.0.0.1::$port"
+    printf 'CHROMIATOR_SWAY_OUTPUT=%q\n' "$output_name"
+    printf 'CHROMIATOR_SWAY_PID=%q\n' "$sway_pid"
+    printf 'CHROMIATOR_WAYVNC_PID=%q\n' "$wayvnc_pid"
+    printf 'CHROMIATOR_DBUS_PID=%q\n' "$dbus_pid"
+    printf 'CHROMIATOR_ATSPI_PID=%q\n' "$atspi_pid"
+    printf 'CHROMIATOR_SWAY_UNIT=%q\n' "$sway_unit"
+    printf 'CHROMIATOR_WAYVNC_UNIT=%q\n' "$wayvnc_unit"
+    printf 'CHROMIATOR_DBUS_UNIT=%q\n' "$dbus_unit"
+    printf 'CHROMIATOR_ATSPI_UNIT=%q\n' "$atspi_unit"
+    printf 'CHROMIATOR_SESSION_STARTED=%q\n' "$started_at"
+    printf 'CHROMIATOR_SWAY_LOG=%q\n' "$sway_log"
+    printf 'CHROMIATOR_WAYVNC_LOG=%q\n' "$wayvnc_log"
+    printf 'CHROMIATOR_DBUS_LOG=%q\n' "$dbus_log"
+    printf 'CHROMIATOR_ATSPI_LOG=%q\n' "$atspi_log"
+    printf 'CHROMIATOR_WAYLAND_WIDTH=%q\n' "$width"
+    printf 'CHROMIATOR_WAYLAND_HEIGHT=%q\n' "$height"
+} >"$SESSION_ENV"
+chmod 600 "$SESSION_ENV"
+
+trap - ERR INT TERM
+printf 'private headless Sway session started\n'
+printf '  Wayland: %s/%s\n' "$runtime_dir" "$wayland_display"
+printf '  Sway IPC: %s\n' "$sway_socket"
+printf '  VNC:     127.0.0.1::%s (no authentication; loopback only)\n' "$port"
+printf '  output:  %s at %sx%s\n' "$output_name" "$width" "$height"
+printf '  units:   %s, %s, %s, %s\n' "$sway_unit" "$wayvnc_unit" "$atspi_unit" "$dbus_unit"
+printf '  logs:    %s\n' "$STATE_DIR"

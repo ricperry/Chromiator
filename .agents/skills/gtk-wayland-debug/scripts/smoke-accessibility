@@ -1,0 +1,50 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=common.sh
+source "$SCRIPT_DIR/common.sh"
+if (( $# )); then
+    printf 'usage: smoke-accessibility\nRuns the bundled Spectrum Example in a fresh private session.\n'
+    [[ $# == 1 && "$1" == --help ]] && exit 0
+    exit 1
+fi
+started=0
+cleanup() {
+    local status=$?
+    if (( started )); then
+        if [[ -r "$ACTIVE_EVIDENCE_FILE" ]]; then
+            "$SCRIPT_DIR/evidence-bundle" || true
+        fi
+        "$SCRIPT_DIR/session-stop" || true
+    fi
+    exit "$status"
+}
+trap cleanup EXIT
+"$SCRIPT_DIR/preflight"
+"$SCRIPT_DIR/session-start"
+started=1
+"$SCRIPT_DIR/app-start"
+evidence_dir="$(active_evidence_dir)"
+log="$evidence_dir/accessibility-smoke.log"
+run() {
+    printf '\n$' >>"$log"
+    printf ' %q' "$@" >>"$log"
+    printf '\n' >>"$log"
+    "$@" 2>&1 | tee -a "$log"
+}
+run "$SCRIPT_DIR/ui" wait 'Try Spectrum Example' --exact --role button --state enabled --timeout 5
+run "$SCRIPT_DIR/ui" controls --depth 20 --json
+run "$SCRIPT_DIR/ui" inspect 'Try Spectrum Example' --exact --role button
+run "$SCRIPT_DIR/ui" activate 'Try Spectrum Example' --exact --role button
+run "$SCRIPT_DIR/ui" wait 'Source' --exact --role 'toggle button' --state enabled --timeout 30
+run "$SCRIPT_DIR/ui" inspect 'Source' --exact --role 'toggle button'
+run "$SCRIPT_DIR/ui" toggle 'Source' --exact --role 'toggle button'
+run "$SCRIPT_DIR/ui" wait 'Source' --exact --role 'toggle button' --state pressed --timeout 5
+run "$SCRIPT_DIR/screenshot" source.png
+run "$SCRIPT_DIR/ui" toggle 'Result' --exact --role 'toggle button'
+run "$SCRIPT_DIR/ui" wait 'Result' --exact --role 'toggle button' --state pressed --timeout 5
+run "$SCRIPT_DIR/ui" inspect 'Result' --exact --role 'toggle button'
+run "$SCRIPT_DIR/ui" controls --subtree 'Voronoi site list' --depth 6 --json
+run "$SCRIPT_DIR/screenshot" result.png
+printf 'accessibility smoke passed: %s\n' "$evidence_dir"

@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=common.sh
+source "$SCRIPT_DIR/common.sh"
+load_session
+evidence_dir="${1:-$(active_evidence_dir)}"
+mkdir -p "$evidence_dir"
+
+"$SCRIPT_DIR/collect-logs" "$evidence_dir" >/dev/null
+python3 "$SCRIPT_DIR/atspi_tool.py" tree --application Chromiator --depth 12 \
+    >"$evidence_dir/accessibility-current.txt" 2>"$evidence_dir/accessibility-error.txt" || true
+
+visual_status="failed: inspect Sway/session logs"
+if "$SCRIPT_DIR/screenshot" "$evidence_dir/current.png" >/dev/null; then
+    visual_status="captured: current.png"
+fi
+
+{
+    printf '# Chromiator private Wayland evidence\n\n'
+    printf -- '- Captured: %s\n' "$(date --iso-8601=seconds)"
+    printf -- '- Semantic: accessibility-current.txt\n'
+    printf -- '- Visual: %s\n' "$visual_status"
+    printf -- '- Diagnostic: app logs, sway.log, wayvnc.log, atspi.log, dbus.log, environment.txt\n'
+    printf -- '- Authority: automated evidence only; not user acceptance or manual GNOME/Wayland review.\n'
+    printf -- '- Compositor limitation: Sway/wlroots is not Mutter/GNOME Shell.\n\n'
+    printf '## Findings\n\n'
+    printf 'Record observed semantic, visual, document/output, and diagnostic agreement or disagreement here.\n'
+} >"$evidence_dir/report.md"
+
+printf '%s\n' "$evidence_dir"

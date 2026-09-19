@@ -74,6 +74,28 @@ pub fn add_site_at(
     Some(site_id)
 }
 
+/// Add an explicitly chosen color, optionally attached to a Source-image pixel.
+/// New colors start identity-mapped; later Source edits preserve Target.
+pub fn add_site_color(
+    state: &mut VoronoiState,
+    color: [f32; 4],
+    position: Option<[f64; 2]>,
+) -> u64 {
+    let id = state.next_site_id;
+    state.next_site_id += 1;
+    state.sites.push(VoronoiSite {
+        id,
+        order: id,
+        source_color: color,
+        target_color: [color[0], color[1], color[2]],
+        influence: 0.0,
+        locked: false,
+        position,
+        size: SampleSize::Point,
+    });
+    id
+}
+
 pub fn reattach_site(
     state: &mut VoronoiState,
     source: &PixelImage,

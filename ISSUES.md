@@ -1,4 +1,4 @@
-# Threshiator issue tracker
+# Chromiator issue tracker
 
 This editable tracker uses stable `THR-NNN` IDs. Check an item only when its acceptance note is verified. Status is `open`, `in-progress`, `blocked`, or `done`; priority is `P0`–`P3`. Completion notes should name the verifying test, artifact, or review and the completion date.
 
@@ -7,6 +7,30 @@ Repository steering policy: newly reported issues are logged here and remain que
 Unresolved issues are grouped by their primary ownership area and ordered by severity and creator impact: `P0` blocks a core workflow, `P1` materially affects correctness or a primary workflow, `P2` is an important improvement or preventative safeguard, and `P3` is low-impact polish. Cross-cutting dependencies remain explicit in each issue's cross-references.
 
 ## Unresolved — UI/UX
+
+- [x] **THR-067** - `done` · P2 · Accessibility - Complete the requested
+  keyboard/AT-SPI pass. Mnemonics, F6 region navigation, and concise names are
+  implemented; native inspection found Source/Target captions overriding
+  site-qualified names, arrow/Export naming gaps, and unconfirmed focus/relation
+  readback. Corrected and verified 2026-09-19: unique per-site names, named arrow
+  and Export, persistent-input F6/Shift+F6 and mnemonic focus readback, and
+  independent UI/UX screenshot review. Raw AT-SPI relation lists remain a GTK
+  bridge limitation, not claimed evidence. See
+  `docs/ACCESSIBILITY_VERIFICATION_2026-09-19.md` for evidence and limits.
+
+- [x] **THR-068** - `done` · P1 · Color picker - Opening the saturated-blue
+  Source picker from the native transition fixture aborts in the OKHSL conversion
+  at `src/color.rs:108`. Reproduced during private-Sway accessibility testing;
+  corrected 2026-09-19 with fixed-lightness/hue chroma contraction at the blue
+  boundary and intermediate samples. Two new regressions, all 105 tests, strict
+  Clippy, three release checks, and native blue-picker rendering pass. See
+  `docs/ACCESSIBILITY_VERIFICATION_2026-09-19.md` and its preserved stderr log.
+
+- [ ] **THR-069** - `open` · P3 · Accessibility polish - Expose picker Original
+  and New swatches as named color samples with dynamic color descriptions;
+  include the new F6 navigation guidance in the canvas accessible description
+  as well as its tooltip. Nonblocking follow-up from independent UI/UX review;
+  no full screen-reader acceptance is claimed by the current private-Sway pass.
 
 - [ ] **THR-998** — `open` · P1 · Thresholds — In the hue mapping editor, the first and last bands should be linked/wrap around so they share the same level.
 
@@ -40,7 +64,7 @@ Unresolved issues are grouped by their primary ownership area and ordered by sev
 
 ### P1 — High impact
 
-- [x] **THR-045** — `done` · P1 · Display color delivery — Finalized the application boundary: Threshiator supplies a bounded encoded-sRGB GTK preview and delegates monitor-profile selection and final display transformation to the OS, window manager, and compositor. The app will not query EDID/colord, implement display profiling, or claim HDR/wide-gamut presentation. Palette-reduced results that need display-specific grading belong in a purpose-built downstream application. Closed by explicit product decision on 2026-07-16; README and the final PNG/EXR contract state the boundary.
+- [x] **THR-045** — `done` · P1 · Display color delivery — Finalized the application boundary: Chromiator supplies a bounded encoded-sRGB GTK preview and delegates monitor-profile selection and final display transformation to the OS, window manager, and compositor. The app will not query EDID/colord, implement display profiling, or claim HDR/wide-gamut presentation. Palette-reduced results that need display-specific grading belong in a purpose-built downstream application. Closed by explicit product decision on 2026-07-16; README and the final PNG/EXR contract state the boundary.
 - [ ] **THR-017** — `in-progress` · P1 · Color pipeline — Design, process, and expose alpha quantization and input smoothing while preserving straight-alpha precision and cancellation. Scoped progress 2026-07-15: global Smooth source 0–10 runs a cancellable separable Gaussian before both engines, filtering premultiplied RGB+alpha then restoring straight alpha; the finalized project v5 and preset v2 formats store the shared setting directly. Full export uses source-pixel amount; bounded preview uses preview-pixel amount as a documented interaction-cost tradeoff. Alpha quantization remains open.
 - [x] **THR-018** — `done` · P1 · Import/export — Finalized native file support without a browser compatibility layer: project v5 and preset JSON v2 are the only accepted editable formats; legacy browser JSON/PNG recipes are not imported or embedded. Older pre-release versions are rejected with actionable diagnostics and never migrated or rewritten. Completed 2026-07-16 with exact-version, missing-field, unknown-field, strict-archive, and unchanged-incompatible-preset tests.
 
@@ -91,3 +115,124 @@ Unresolved issues are grouped by their primary ownership area and ordered by sev
 - [x] **THR-055** — `done` · P1 · Voronoi site details — Replaced the detached global Site details panel and selection-dependent Influence row with one concise accordion tile per site. Each visible title is only its sequential number; aligned Source and Target swatch columns, attachment/coverage, lock, and disclosure remain in the primary row. Influence, Source position, Footprint, and Delete live inside the expanded tile, with zero-or-one open and an open panel following row/canvas selection by stable site ID. Removed the Marker/ID/coordinate block while retaining internal IDs for processing and persistence. Completed 2026-07-16. Evidence: 98 native tests, an explicit live accordion identity/single-open audit, 8/8 GTK scenarios with no critical diagnostics, and inspected 1180×760 plus 720×700 expanded-site captures.
 - [x] **THR-056** — `done` · P1 · Voronoi color matching — Added explicit **Perceptual (OKHSL)** matching beside Perceptual (OKLab), RGB, and HSV. Bounded canonical Source/pixel colors compare in the seam-safe unit cylinder `(S·cos(2πH), S·sin(2πH), L)` with ordinary squared Euclidean distance; zero Saturation erases Hue, and Influence scales the complete metric without per-axis weights. OKLab remains the default. The UI and documentation deliberately describe this as perception-informed cylindrical matching rather than ΔE-grade uniformity. Completed 2026-07-16. Evidence: canonical coordinate, seam, neutral, Saturation, Lightness, Influence, tie, alpha, project/preset, legacy-HSV serialization, and preview/full fixtures; 100 native tests; strict Clippy; optimized build; 8/8 GTK audit visiting all four modes; inspected standard/narrow OKHSL artifacts with actual/asserted sidecars; and independent review with no P0/P1 findings. Directional release startup-to-screenshot timing on the embedded 1254×1254 example had a 1.60s median for OKHSL versus 1.36s for HSV across three runs; one OKHSL screenshot-retry outlier took 3.17s, so these numbers bound end-to-end interaction cost rather than isolate the matching kernel. THR-057 later changed only HSV processing geometry; THR-058 then removed OKHSL matching from the creator-facing menu while retaining the dormant implementation for possible research.
 - [x] **THR-057** — `done` · P0 · Voronoi HSV — Replace the archived unit-cylinder HSV metric with an endpoint-aware cone because relative Saturation and unstable Hue retained full radial weight near black, overwhelming a much smaller Value difference and sending dark pixels to brighter sites. HSV now compares `(S·V·cos(H), S·V·sin(H), V)`, which is equivalent to using encoded-RGB chroma as the radial coordinate and naturally collapses Hue at black. OKHSL processing is deliberately unchanged while real-image comparison determines whether that separate matching mode remains useful. Project and preset serialization remain compatible, but existing HSV cell boundaries intentionally change. Completed 2026-07-16. Evidence: the sampled `#010101` → `#010322` versus `#509bb4` regression now selects the darkest site; seam, neutral, Value, deterministic tie, Influence, alpha, preview/full and PNG16 export coverage remain green; 100 native tests, strict Clippy, optimized build, and an inspected live HSV render pass with the darkest example site increasing to 24.6% coverage.
+## THR-060 - Voronoi-only GTK4 refactor
+
+Status: implementation edits present; final verification and acceptance pending.
+
+User-directed scope: remove Thresholds and mode switching; remove libadwaita;
+adopt Toniator-style GTK4 presentation; extract authoritative document/session,
+job, picker, and processing boundaries; preserve retained creative capabilities.
+Project v6 and preset v3 deliberately reject older files without rewriting them.
+
+The architecture checkpoint passed 88 tests before the final GTK4 edits.
+Resource/template/dialog compilation, final regression and native UI checks,
+and measured performance decisions remain unverified. See
+`docs/FUNCTIONAL_AUDIT.md` for evidence and remaining checks. No user acceptance
+or complete-refactor claim is implied.
+
+Thresholds-only THR-998, THR-024, and THR-023 are superseded by the explicitly
+requested feature removal, not fixed in their former implementation. Their
+historical entries remain intact. Other issues remain open unless separately
+resolved with evidence; this refactor does not imply blanket closure.
+
+## THR-061 - Voronoi boundary blending / color transition
+
+Status: implementation present; verification in progress, not complete or accepted.
+Priority: P1.
+
+User-approved direction: one global Transition width, Oklab/Linear RGB mixing,
+Multisite/Shared borders scope, and smooth multiway junctions. Hard mapping and
+coverage remain unchanged at width zero. Shared borders requires actual weighted
+region contacts, not a nearest-two shortcut. Existing current-format files remain
+readable; no legacy preset conversion is included.
+
+Initial implementation passes 105 tests, strict Clippy and the app build. One new
+whole-project round-trip test fails on existing f64 site-position JSON precision.
+Rendered evidence also exposes an overly conservative coplanar contact fallback;
+its correction is identified but pending approval. See
+`docs/TRANSITION_VERIFICATION.md` for evidence and remaining work.
+## THR-062 - Existing-project Save holds a read borrow while starting a job
+
+Status: fixed and verified; existing-path Save completed in private Sway on 2026-09-19. See `docs/BUG_HUNT_FOLLOWUP_2026-09-19.md`.
+Priority: P1.
+
+In `src/shell_actions.rs`, `prompt_project_save` reads `project_path` in an
+if-let condition and calls `start_project_save` from its body. The temporary
+RefCell read guard survives into a path requiring mutable state in `begin_job`.
+Copy the path to a local before the conditional, then exercise Save on an
+already-named project. Not yet reproduced through a native file workflow.
+
+## THR-063 - Drag completion does not enable document Undo
+
+Status: fixed and verified; canvas drag enables Undo, with native Undo/Redo and savepoint readback. See `docs/BUG_HUNT_FOLLOWUP_2026-09-19.md`.
+Priority: P1.
+
+After moving a source marker in a clean Spectrum Example, pixels, coverage, and
+dirty state update, but Undo stays disabled. `canvas_sampling` completes the
+session gesture and schedules preview without synchronizing document history
+controls. The session-level drag regression passes, demonstrating the missing
+GTK projection coverage. See `docs/BUG_HUNT_2026-09-13.md` and `drag-result.png`.
+
+## THR-064 - Picker local Undo does not restore expected displayed Lightness
+
+Status: fixed and verified; rounded picker display input no longer adds spurious local edits. See `docs/BUG_HUNT_FOLLOWUP_2026-09-19.md`.
+Priority: P2.
+
+In Choose Target Color, set Lightness from approximately 1.7168 to 45. Activating
+local Undo and reading Lightness still returned 45; Redo also returned 45.
+Cancel and reopening returned 1.7168, so the tested draft did not leak into the
+document. Diagnose gesture coalescing, rounding/no-op steps, and widget refresh
+before choosing a fix. Do not infer global history failure from this result.
+
+## THR-065 - Enforce application layout minimums and right-pinned side panel
+
+Status: open; deferred, low-priority follow-up. The user accepts the current work with this known limitation; it is not an acceptance blocker.
+Priority: P3 (low).
+
+This is an application layout enforcement issue, not merely inspector clipping.
+The inspector is the side panel. With it visible, enforce its minimum width and
+keep it pinned to the right window border. The overall window minimum width
+should accommodate the minimum canvas width plus the minimum side-panel width,
+including the divider and relevant spacing. With the panel hidden, allow a
+smaller window consistent with the canvas minimum. Preserve vertical scrolling
+for settings that exceed the available height.
+
+The user normally works with a larger window to view artwork and access settings;
+the current small-window behavior is understandable and is not bothering them.
+No layout implementation change is requested now.
+
+Evidence: resizing the private output from 1440x1000 to 1024x600 leaves side-panel
+controls clipped beyond the right edge. The attempted sizing fix did not resolve
+this in the 2026-09-19 native check. Manual panel hiding yielded a usable 720x600
+canvas in the earlier check. See `docs/BUG_HUNT_FOLLOWUP_2026-09-19.md` and
+`responsive-1024.png` / `responsive-720-hidden.png` in the earlier bug-hunt evidence.
+> THR-061 status update (2026-09-19): implemented and verification complete;
+> artistic user acceptance pending. Priority P1. This supersedes the earlier
+> implementation-in-progress and solver/serialization blocker notes below.
+> Evidence: 111 tests, strict Clippy and build; three opt-in release checks;
+> twelve inspected fixtures; native width, blend-space/scope, Undo/Redo,
+> save/reopen and PNG 16-bit export checks. The dropdown harness failure is
+> corrected and verified. See `docs/TRANSITION_SOLVER_CORRECTION.md` for paths,
+> limits, and the measured high-site-count Shared borders cost. THR-065 remains
+> deferred; no layout or user-owned CSS changes were made for this closeout.
+## THR-066 - Pre-alpha file-format and preset cleanup
+
+- Status: open; required before alpha, not part of the current mode removal.
+- Priority: P1, pre-alpha readiness.
+- Context: the user confirmed that file formats are not final and compatibility
+  breaks are acceptable during this pre-alpha development phase.
+- Scope: reconcile project/preset schemas with the final supported controls,
+  refresh bundled fixtures and examples, inventory obsolete personal presets,
+  and document the supported format and rejection policy before alpha.
+- Preserve user-owned files; inventorying obsolete files is not permission to
+  rewrite or delete them. Agree on cleanup handling before changing user data.
+- Completion evidence: current-format round trips and rejection tests, valid
+  bundled presets/examples, and an explicit documented alpha format decision.
+
+> THR-061 follow-up: Shared borders, its scope control/state, and its contact
+> solver were removed by user decision. Multisite blending is now the only
+> behavior. No compatibility shim was added. The user accepted this work. Test
+> cleanup and verification are complete: 103 tests, strict Clippy, build, three
+> opt-in release checks, inspected images and a focused private-Sway transition
+> check pass. See `docs/TRANSITION_TEST_CLEANUP.md`; earlier records below are
+> historical. THR-066 remains open for pre-alpha format/preset cleanup.

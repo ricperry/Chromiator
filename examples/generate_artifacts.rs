@@ -1,9 +1,9 @@
 use std::path::Path;
 
 use anyhow::Result;
-use threshiator::document::{Document, ExportDefaults, Recipe};
-use threshiator::export::{self, ExportFormat};
-use threshiator::{processing, project, raster};
+use chromiator::document::{Document, ExportDefaults, Recipe};
+use chromiator::export::{self, ExportFormat};
+use chromiator::{processing, project, raster};
 
 fn main() -> Result<()> {
     let destination = Path::new("tests/artifacts/exports");
@@ -12,7 +12,7 @@ fn main() -> Result<()> {
     let (bytes, decoded) = raster::decode_file(source_path)?;
     let mut recipe = Recipe::default();
     let proxy = processing::bounded_preview(&decoded.pixels);
-    recipe.voronoi = threshiator::voronoi::auto_initialize(&proxy, &decoded.pixels);
+    recipe.voronoi = chromiator::voronoi::auto_initialize(&proxy, &decoded.pixels);
     recipe.set_hue_degrees(12.5);
     let result = processing::process(&decoded.pixels, &recipe);
     export::export(
@@ -30,7 +30,7 @@ fn main() -> Result<()> {
         &result,
         ExportFormat::OpenExr32Float,
     )?;
-    let project_path = destination.join("example.threshiator");
+    let project_path = destination.join("example.chromiator");
     project::save(
         &project_path,
         &Document {

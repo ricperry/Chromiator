@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$SCRIPT_DIR/common.sh"
+
+(( $# >= 4 && $# <= 6 )) || die "usage: drag START_X START_Y END_X END_Y [BUTTON] [STEPS]"
+run_vnc_helper drag "$@"

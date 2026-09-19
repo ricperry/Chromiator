@@ -1,0 +1,55 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=common.sh
+source "$SCRIPT_DIR/common.sh"
+load_session
+
+evidence_dir="${1:-$(active_evidence_dir)}"
+mkdir -p "$evidence_dir"
+
+cp -- "$CHROMIATOR_SWAY_LOG" "$evidence_dir/sway.log"
+cp -- "$CHROMIATOR_WAYVNC_LOG" "$evidence_dir/wayvnc.log"
+cp -- "$CHROMIATOR_DBUS_LOG" "$evidence_dir/dbus.log"
+cp -- "$CHROMIATOR_ATSPI_LOG" "$evidence_dir/atspi.log"
+
+{
+    printf 'captured_at=%s\n' "$(date --iso-8601=seconds)"
+    printf 'repo=%s\n' "$REPO_ROOT"
+    printf 'git_head=%s\n' "$(git -C "$REPO_ROOT" rev-parse HEAD)"
+    printf 'kernel=%s\n' "$(uname -srmo)"
+    printf 'fedora=%s\n' "$(rpm -E %fedora)"
+    rpm -q sway wayvnc grim at-spi2-core gtk4 libadwaita python3-pyatspi python3-dogtail 2>&1 || true
+    if vnc_python="$(resolve_vnc_python 2>/dev/null)"; then
+        "$vnc_python" "$SCRIPT_DIR/vnc_client.py" version 2>&1 || true
+    else
+        printf 'vncdotool=unavailable\n'
+    fi
+} >"$evidence_dir/environment.txt"
+
+{
+    printf 'started_at=%s\n' "$CHROMIATOR_SESSION_STARTED"
+    printf 'wayland_display=%s\n' "$WAYLAND_DISPLAY"
+    printf 'vnc_server=%s\n' "$CHROMIATOR_VNC_SERVER"
+    printf 'geometry=%sx%s\n' "$CHROMIATOR_WAYLAND_WIDTH" "$CHROMIATOR_WAYLAND_HEIGHT"
+    printf 'gtk_renderer=%s\n' "${CHROMIATOR_GSK_RENDERER:-cairo}"
+    printf 'sway_output=%s\n' "$CHROMIATOR_SWAY_OUTPUT"
+    printf 'sway_pid=%s\n' "$CHROMIATOR_SWAY_PID"
+    printf 'wayvnc_pid=%s\n' "$CHROMIATOR_WAYVNC_PID"
+    printf 'dbus_pid=%s\n' "$CHROMIATOR_DBUS_PID"
+    printf 'atspi_pid=%s\n' "$CHROMIATOR_ATSPI_PID"
+    printf 'sway_unit=%s\n' "$CHROMIATOR_SWAY_UNIT"
+    printf 'wayvnc_unit=%s\n' "$CHROMIATOR_WAYVNC_UNIT"
+    printf 'dbus_unit=%s\n' "$CHROMIATOR_DBUS_UNIT"
+    printf 'atspi_unit=%s\n' "$CHROMIATOR_ATSPI_UNIT"
+    if [[ -r "$APP_PID_FILE" ]]; then
+        printf 'app_pid=%s\n' "$(<"$APP_PID_FILE")"
+    fi
+    if [[ -r "$APP_UNIT_FILE" ]]; then
+        printf 'app_unit=%s\n' "$(<"$APP_UNIT_FILE")"
+    fi
+} >"$evidence_dir/session.txt"
+
+git -C "$REPO_ROOT" status --short --branch >"$evidence_dir/git-status.txt"
+printf '%s\n' "$evidence_dir"

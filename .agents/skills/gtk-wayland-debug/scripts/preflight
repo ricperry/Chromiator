@@ -1,0 +1,78 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=common.sh
+source "$SCRIPT_DIR/common.sh"
+
+failures=0
+
+check_command() {
+    local command_name="$1"
+    if command -v "$command_name" >/dev/null 2>&1; then
+        printf 'ok      command %s: %s\n' "$command_name" "$(command -v "$command_name")"
+    else
+        printf 'missing command %s\n' "$command_name"
+        failures=$((failures + 1))
+    fi
+}
+
+for command_name in sway swaymsg wayvnc wayvncctl grim dbus-daemon gdbus python3 git systemctl systemd-run rg; do
+    check_command "$command_name"
+done
+
+if systemctl --user is-active --quiet default.target; then
+    manager_state="$(systemctl --user is-system-running 2>/dev/null || true)"
+    printf 'ok      systemd user manager (%s)\n' "${manager_state:-reachable}"
+else
+    printf 'missing active systemd user default target\n'
+    failures=$((failures + 1))
+fi
+
+if [[ -x /usr/libexec/at-spi2-registryd ]]; then
+    printf 'ok      AT-SPI registry daemon\n'
+else
+    printf 'missing /usr/libexec/at-spi2-registryd (Fedora package: at-spi2-core)\n'
+    failures=$((failures + 1))
+fi
+
+if python3 "$SCRIPT_DIR/atspi_tool.py" check >/dev/null 2>&1; then
+    printf 'ok      Python AT-SPI bindings\n'
+else
+    printf 'missing Python AT-SPI bindings (Fedora package: python3-pyatspi)\n'
+    failures=$((failures + 1))
+fi
+
+if python3 "$SCRIPT_DIR/dogtail_check.py" >/dev/null 2>&1; then
+    printf 'ok      Dogtail (optional semantic exploration layer)\n'
+else
+    printf 'optional Dogtail is missing (Fedora package: python3-dogtail)\n'
+fi
+
+if vnc_python="$(resolve_vnc_python 2>/dev/null)"; then
+    printf 'ok      VNCDoTool via %s\n' "$vnc_python"
+else
+    printf 'missing or broken VNCDoTool (install vncdotool)\n'
+    if command -v vncdo >/dev/null 2>&1; then
+        vncdo --version 2>&1 | sed 's/^/        /' || true
+    fi
+    failures=$((failures + 1))
+fi
+
+if [[ -x "$REPO_ROOT/target/debug/chromiator" ]]; then
+    printf 'ok      Chromiator debug binary: %s\n' "$REPO_ROOT/target/debug/chromiator"
+else
+    printf 'missing Chromiator debug binary; build the bounded target before app-start\n'
+    failures=$((failures + 1))
+fi
+
+printf 'repo    %s\n' "$REPO_ROOT"
+printf 'state   %s\n' "$STATE_DIR"
+printf 'evidence %s\n' "$EVIDENCE_ROOT"
+
+if (( failures > 0 )); then
+    printf 'preflight failed with %d required issue(s)\n' "$failures" >&2
+    exit 1
+fi
+
+printf 'preflight passed\n'

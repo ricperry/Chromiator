@@ -10,7 +10,7 @@ pub fn classify_open_path(path: &Path) -> OpenKind {
     if path
         .extension()
         .and_then(|value| value.to_str())
-        .is_some_and(|value| value.eq_ignore_ascii_case("threshiator"))
+        .is_some_and(|value| value.eq_ignore_ascii_case("chromiator"))
     {
         OpenKind::Project
     } else {
@@ -23,7 +23,7 @@ pub fn ensure_project_extension(path: PathBuf) -> PathBuf {
         path
     } else {
         let mut value = path.into_os_string();
-        value.push(".threshiator");
+        value.push(".chromiator");
         value.into()
     }
 }
