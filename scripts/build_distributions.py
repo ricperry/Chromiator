@@ -17,6 +17,9 @@ import audit_appimage
 ROOT = Path(__file__).resolve().parents[1]
 APP_ID = "io.github.chromiator.Chromiator"
 APPIMAGE_LOCK = ROOT / "packaging/appimage/build-lock.json"
+GRAPHICS_DRIVER_SONAMES = (
+    "libGL.so.1", "libEGL.so.1", "libvulkan.so.1", "libgbm.so.1", "libdrm.so.2",
+)
 
 
 def digest(path):
@@ -169,7 +172,7 @@ def complete_appdir_libraries(appdir, deploy, env, lock):
 def drop_generated_graphics_loaders(appdir):
     """Leave GPU API loaders and actual drivers to the declared host desktop stack."""
     libdir = appdir / "usr/lib"
-    driver_sonames = {"libGL.so.1", "libEGL.so.1", "libvulkan.so.1", "libgbm.so.1", "libdrm.so.2"}
+    driver_sonames = set(GRAPHICS_DRIVER_SONAMES)
     generated = set()
     for path in audit_appimage.elf_files(libdir):
         _, soname = audit_appimage.dynamic_links(audit_appimage.readelf(path, "--dynamic"))
@@ -232,7 +235,9 @@ def appimage_inside_builder(work, version, arch, args, lock):
         "--output", work / "abi-audit.json", env=env)
     artifact = work / f"Chromiator-{version}-{arch}.AppImage"
     env["OUTPUT"] = str(artifact)
-    run(deploy, "--appdir", appdir, "--output", "appimage", cwd=work, env=env)
+    run(deploy, "--appdir", appdir,
+        *(f"--exclude-library={soname}" for soname in GRAPHICS_DRIVER_SONAMES),
+        "--output", "appimage", cwd=work, env=env)
     run("python3", ROOT / "scripts/audit_appimage.py", appdir, "--resolve-relocations", "--outer-elf", artifact,
         "--output", work / "abi-audit.json", env=env)
     extraction = work / "packaged-extraction"

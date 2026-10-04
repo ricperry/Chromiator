@@ -94,21 +94,29 @@ including GTK modules and image loaders, against GLIBC 2.41; resolves DT_NEEDED
 from the bundle or the lock's narrow host list; checks the reported Fontconfig
 and HarfBuzz imports against bundled providers; checks the loader cache and
 runtime hook for stale build paths; and runs relocation resolution with the
-Debian loader. The script also extracts and audits the completed AppImage, but
-that post-build audit has not run because output creation failed. The staged
-AppDir report is at
-`target/distribution/0.2.0-kj2p818g/appimage/output/abi-audit.json`.
+Debian loader. The script also extracts and audits the completed AppImage and its outer
+runtime. The 2026-10-04 build-7 candidate passed both final audits with 119 ELF
+files, zero errors, and maximum GLIBC 2.39. Reports are
+`target/distribution/0.2.0-vsd173k4/appimage/output/abi-audit.json` and
+`target/distribution/0.2.0-vsd173k4/appimage/output/packaged-abi-audit.json`.
 A passing static audit is not clean-system acceptance.
 
 The published v0.2.0 Fedora-built AppImage fails this proposed ceiling: seven
 bundled libraries require GLIBC 2.43, and Fontconfig/HarfBuzz providers are
 host-resolved. The 2026-10-03 output attempt predates the runtime pin and failed
-on appimagetool's mutable runtime fetch. The updated build command was rejected
-before execution by the current policy gate and was not retried. No candidate,
-candidate hash, or extracted-payload audit exists. The staged AppDir report at
-`target/distribution/0.2.0-kj2p818g/appimage/output/abi-audit.json` is not
-candidate evidence. Do not advertise Debian 13 compatibility until the updated
-build, actual artifact audit, and clean-runtime checks pass.
+on appimagetool's mutable runtime fetch. The updated command was rejected before execution in the earlier task.
+The continuation task obtained approval through its supported execution path.
+Build 5 then exposed final-pass Vulkan-loader reinsertion; build 6 exposed
+exclusion-option syntax. Final packaging now repeats one
+`--exclude-library=<SONAME>` per existing prohibited graphics loader, preserving
+the audited closure. Build 7 completed with the same strict audits and runtime
+pin. Candidate: `target/distribution/0.2.0-vsd173k4/appimage/output/Chromiator-0.2.0-x86_64.AppImage`,
+28,228,088 bytes, SHA-256 `a123e544a6069701235a338c2a0174a972db1fe7e5a0a2f782318732c3bdf621`.
+It is based on checkpoint `425760c` plus the local packaging fix and the
+pre-existing local icon edit copied by the build snapshot. See
+`docs/FUNCTIONAL_AUDIT.md` for provenance and failed-attempt history. The
+candidate is for internal testing; clean-Debian and Fedora GUI workflows have
+not run. Do not advertise Debian 13 compatibility until those checks pass.
 
 When package launches are authorized on a clean target system, run
 `scripts/smoke_appimage.sh /absolute/package.AppImage /new/output/directory

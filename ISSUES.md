@@ -301,7 +301,7 @@ canvas in the earlier check. See `docs/BUG_HUNT_FOLLOWUP_2026-09-19.md` and
   the builder had not run and no compatible AppImage existed; see the current
   Stage 1 result below.
 
-  Current Stage 1 result (2026-10-04; supersedes the planning-time statement
+  Earlier Stage 1 result (2026-10-04; supersedes the planning-time statement
   above that the pinned builder had not run): the Debian 13 x86_64 image
   `3e74a6b29fcfaa36ce01a16c40f356ba68509920002a37360129defbf09ec537` built
   with glibc 2.41, the Rust 1.97.1 archive hash verified, and offline release
@@ -336,6 +336,21 @@ canvas in the earlier check. See `docs/BUG_HUNT_FOLLOWUP_2026-09-19.md` and
   verification history is in `docs/FUNCTIONAL_AUDIT.md`. THR-071 remains
   `in-progress`; no packaging
   acceptance or Stage 2 work is implied.
+
+  Candidate continuation (2026-10-04): the supported new-task approval path
+  permitted the pinned pipeline. Build 5 was rejected by the strict audit for
+  Vulkan-loader reinsertion; build 6 stopped on CLI syntax. The bounded final-pass
+  exclusion fix now uses repeated options verified with the pinned binary;
+  all 13 packaging tests pass. Build 7 produced a 28,228,088-byte AppImage,
+  SHA-256 `a123e544a6069701235a338c2a0174a972db1fe7e5a0a2f782318732c3bdf621`. Post-output AppDir and
+  extracted-payload audits both pass: 119 ELF files, maximum GLIBC 2.39,
+  zero errors against 2.41. Evidence: `target/distribution/0.2.0-vsd173k4/appimage/output/`
+  and `target/distribution/stage1-build-7.log`. Base `425760c` plus local packaging
+  fix and the preserved local icon input are recorded in candidate provenance.
+  Fedora GUI control is unavailable through native CUA in this task;
+  FUSE/GUI and clean-Debian runtime checks remain pending. THR-071 stays
+  `in-progress`; this is test readiness, not acceptance. No further commit,
+  push, release, or Stage 2 work is implied.
 
 - [ ] **THR-072** — `open` · P1 · Editing workflow proposal — After THR-070 and
   THR-071 review, observe small-palette remapping, Target edits, independent

@@ -61,7 +61,7 @@ GLIBC ceiling; the file is mounted read-only and supplied through
 has network disabled, with no implicit runtime download fallback. Retrieval and
 provenance details are in `docs/DISTRIBUTION.md`.
 
-The exact 2026-10-04 build attempt
+The exact earlier-task 2026-10-04 build attempt
 `python3 -B scripts/build_distributions.py appimage > target/distribution/stage1-build-5.log 2>&1`
 was rejected before execution with `approval required by policy, but
 AskForApproval is set to Never`; it was not retried. No `stage1-build-5.log`
@@ -83,6 +83,41 @@ python3 -B scripts/build_distributions.py appimage > target/distribution/stage1-
 
 No build-5 log output was produced; the passing checks did not run the rejected
 build or launch a package.
+
+### Candidate continuation (2026-10-04)
+
+The new task's supported approval path permitted the documented pinned build.
+Build 5 created an AppImage but the strict post-output audit rejected it because
+linuxdeploy reintroduced `libvulkan.so.1`. Build 6 stopped on exclusion-option
+syntax, before creating another candidate. The final invocation now repeats
+`--exclude-library=<SONAME>` for the five existing host graphics loaders.
+The exact pinned linuxdeploy binary accepted those options on `--list-plugins`;
+13 packaging tests, Python syntax, and diff checks passed. No host allowlist,
+audit rule, runtime pin, rendering, preset, or saved-format behavior changed.
+
+Build 7 completed the full offline-container pipeline and extracted-payload
+audit. Candidate: `target/distribution/0.2.0-vsd173k4/appimage/output/Chromiator-0.2.0-x86_64.AppImage`,
+28,228,088 bytes, SHA-256 `a123e544a6069701235a338c2a0174a972db1fe7e5a0a2f782318732c3bdf621`.
+Both post-output AppDir and packaged-payload audits report 119 ELF files,
+zero errors, maximum GLIBC 2.39 against the 2.41 ceiling, with Debian
+relocation resolution and the pinned outer runtime checked. Reports:
+`target/distribution/0.2.0-vsd173k4/appimage/output/abi-audit.json` and
+`target/distribution/0.2.0-vsd173k4/appimage/output/packaged-abi-audit.json`.
+Log: `target/distribution/stage1-build-7.log`.
+
+The application source is based on checkpoint `425760cd51ad868b2a6c06c48885e3958d22c476`
+plus the uncommitted packaging fix. The existing pipeline also copies the
+pre-existing modified packaging icon; this is declared in source-input
+provenance and remains uncommitted. Other unrelated edits and assets are
+preserved and excluded from the candidate inputs.
+
+This is an internal test candidate, not package/runtime acceptance. Native CUA
+control is unavailable in this task (browser surfaces only), so no Fedora GUI,
+FUSE launch, import/export, save/reopen, or new screenshot result is claimed.
+Clean-Debian runtime testing remains for the separate environment. The test
+handoff includes the same candidate, fixtures, exact source snapshot and
+patches, checksums, audit reports, prerequisites, and GUI/parity instructions.
+No additional commit, push, PR, release, main update, or Stage 2 work occurred.
 
 ### Evidence at planning time
 

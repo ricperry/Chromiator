@@ -107,6 +107,11 @@ class RuntimeInputTests(unittest.TestCase):
             command, kwargs = output_calls[0]
             self.assertEqual(command[:2], (work / "linuxdeploy", "--appdir"))
             self.assertEqual(command[-2:], ("--output", "appimage"))
+            self.assertEqual(command[3:-2], (
+                "--exclude-library=libGL.so.1", "--exclude-library=libEGL.so.1",
+                "--exclude-library=libvulkan.so.1", "--exclude-library=libgbm.so.1",
+                "--exclude-library=libdrm.so.2",
+            ))
             self.assertEqual(kwargs["env"]["LDAI_RUNTIME_FILE"], str(work / "runtime"))
             self.assertEqual(kwargs["env"]["OUTPUT"], str(work / "Chromiator-0.2.0-x86_64.AppImage"))
 
