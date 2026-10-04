@@ -1,3 +1,4 @@
 /target/
 /tests/artifacts/
 *.chromiator
+!/tests/fixtures/release-0.2.0/*.chromiator

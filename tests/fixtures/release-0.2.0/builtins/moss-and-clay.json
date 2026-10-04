@@ -1,0 +1,130 @@
+{
+  "version": 3,
+  "name": "Moss and Clay",
+  "description": "Muted forest, sage, terracotta, and bone",
+  "processing": {
+    "preprocessing": {
+      "input_smoothing": 0.0
+    },
+    "voronoi": {
+      "sites": [
+        {
+          "id": 1,
+          "order": 1,
+          "source_color": [
+            0.009134059,
+            0.016807375,
+            0.012286488,
+            1.0
+          ],
+          "target_color": [
+            0.014443844,
+            0.02518686,
+            0.017641954
+          ],
+          "influence": 0.1,
+          "locked": false,
+          "position": null,
+          "size": "Point"
+        },
+        {
+          "id": 2,
+          "order": 2,
+          "source_color": [
+            0.054480277,
+            0.15292615,
+            0.064803265,
+            1.0
+          ],
+          "target_color": [
+            0.061246052,
+            0.114435375,
+            0.054480277
+          ],
+          "influence": 0.0,
+          "locked": false,
+          "position": null,
+          "size": "Point"
+        },
+        {
+          "id": 3,
+          "order": 3,
+          "source_color": [
+            0.3277781,
+            0.43965718,
+            0.25818285,
+            1.0
+          ],
+          "target_color": [
+            0.38132602,
+            0.43415365,
+            0.30054379
+          ],
+          "influence": 0.0,
+          "locked": false,
+          "position": null,
+          "size": "Point"
+        },
+        {
+          "id": 4,
+          "order": 4,
+          "source_color": [
+            0.47932017,
+            0.17144111,
+            0.09758735,
+            1.0
+          ],
+          "target_color": [
+            0.41788507,
+            0.14126329,
+            0.08228271
+          ],
+          "influence": 0.0,
+          "locked": false,
+          "position": null,
+          "size": "Point"
+        },
+        {
+          "id": 5,
+          "order": 5,
+          "source_color": [
+            0.7758222,
+            0.7379104,
+            0.57112485,
+            1.0
+          ],
+          "target_color": [
+            0.82278574,
+            0.7758222,
+            0.63759685
+          ],
+          "influence": 0.0,
+          "locked": false,
+          "position": null,
+          "size": "Point"
+        }
+      ],
+      "next_site_id": 6,
+      "matching": "Perceptual",
+      "transition": {
+        "start": 0.5,
+        "midpoint": 0.5,
+        "end": 0.5
+      }
+    },
+    "steps": [
+      {
+        "working_space": "Oklch",
+        "components": "Hue",
+        "operation": {
+          "RotateHue": {
+            "degrees": 0.0
+          }
+        },
+        "pass_through": "PreserveUnselectedComponents",
+        "alpha": "PassThroughStraight",
+        "conversion_back": "KeepLinearSrgbF32"
+      }
+    ]
+  }
+}

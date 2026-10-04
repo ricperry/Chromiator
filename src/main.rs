@@ -395,13 +395,19 @@ fn build(app: &gtk::Application, cli: Cli) {
     let empty_button = shell.welcome_open();
     let empty_project = shell.welcome_project();
     let empty_example = shell.welcome_example();
-    let hero_texture = gtk::gdk::Texture::for_pixbuf(&embedded_example_pixbuf());
-    let hero = gtk::Picture::for_paintable(&hero_texture);
-    hero.set_content_fit(gtk::ContentFit::Cover);
-    hero.set_can_shrink(true);
-    hero.update_property(&[gtk::accessible::Property::Label(
-        "Spectrum Breakpoint example artwork",
-    )]);
+    let hero = gtk::Picture::new();
+    let hero_has_artwork =
+        if let Some(hero_pixbuf) = embedded_example_pixbuf(example::SPECTRUM_BYTES) {
+            hero.set_paintable(Some(&gtk::gdk::Texture::for_pixbuf(&hero_pixbuf)));
+            hero.set_content_fit(gtk::ContentFit::Cover);
+            hero.set_can_shrink(true);
+            hero.update_property(&[gtk::accessible::Property::Label(
+                "Spectrum Breakpoint example artwork",
+            )]);
+            true
+        } else {
+            false
+        };
     // The artwork covers its full allocation rather than fitting an aspect frame
     // inside it, which left side gutters when the available height was constrained.
     let banner = gtk::DrawingArea::builder()
@@ -412,8 +418,10 @@ fn build(app: &gtk::Application, cli: Cli) {
     banner_overlay.set_child(Some(&banner));
     hero.set_hexpand(true);
     hero.set_vexpand(true);
-    banner_overlay.add_overlay(&hero);
-    banner_overlay.set_measure_overlay(&hero, false);
+    if hero_has_artwork {
+        banner_overlay.add_overlay(&hero);
+        banner_overlay.set_measure_overlay(&hero, false);
+    }
     let window_controls = gtk::WindowControls::new(gtk::PackType::End);
     window_controls.set_halign(gtk::Align::End);
     window_controls.set_valign(gtk::Align::Start);
@@ -720,9 +728,9 @@ fn initialize_voronoi(document: &mut Document) {
     document.recipe.voronoi = chromiator::voronoi::auto_initialize(&proxy, &document.source);
 }
 
-fn embedded_example_pixbuf() -> Pixbuf {
-    Pixbuf::from_read(std::io::Cursor::new(example::SPECTRUM_BYTES))
-        .expect("compiled Spectrum example is a valid raster")
+fn embedded_example_pixbuf(bytes: &[u8]) -> Option<Pixbuf> {
+    let decoded = raster::decode(bytes, None).ok()?;
+    Some(pixbuf(to_display_rgba8(&decoded.pixels)))
 }
 
 fn embedded_example_document() -> anyhow::Result<Document> {
@@ -1742,7 +1750,8 @@ mod tests {
         CANVAS_NATURAL_HEIGHT, CANVAS_NATURAL_WIDTH, CREATIVE_FOCUS_CLASS, CanvasSiteAction, Cli,
         PickerGesture, PickerLocalHistory, VORONOI_MATCHING_LABELS, accessible_site_label,
         application_flags, canvas_site_action, contextual_chrome, divider_from_canvas_x,
-        marker_hit_test, picker_lightness_sequence, picker_plane_encoded_sample,
+        embedded_example_pixbuf, example, marker_hit_test, picker_lightness_sequence,
+        picker_plane_encoded_sample,
         picker_plane_physical_size, selected_user_preset_index, site_label, split_divider_hit,
         unified_preset_labels, visible_voronoi_matching_at, visible_voronoi_matching_index,
     };
@@ -1928,5 +1937,24 @@ mod tests {
                 "My Look",
             ]
         );
+    }
+
+    #[test]
+    fn malformed_optional_welcome_art_is_omitted() {
+        assert!(embedded_example_pixbuf(b"not a raster image").is_none());
+    }
+
+    #[test]
+    fn embedded_welcome_art_decodes_without_gtk_initialization() {
+        let decoded = embedded_example_pixbuf(example::SPECTRUM_BYTES)
+            .expect("released embedded welcome artwork should decode");
+        assert_eq!(decoded.width(), 1254);
+        assert_eq!(decoded.height(), 1254);
+        assert!(decoded.has_alpha());
+        let expected = image::load_from_memory(example::SPECTRUM_BYTES)
+            .unwrap()
+            .to_rgba8()
+            .into_raw();
+        assert_eq!(decoded.read_pixel_bytes().as_ref(), expected.as_slice());
     }
 }

@@ -1,0 +1,29 @@
+FROM docker.io/library/debian@sha256:9cc080028c43b27d2074d63a5f9caf7166d731494965616c1a6d2827a004585c
+
+ARG DEBIAN_FRONTEND=noninteractive
+RUN test "$(dpkg --print-architecture)" = amd64 && test "$(getconf GNU_LIBC_VERSION)" = 'glibc 2.41'
+RUN printf '%s\n' \
+      'deb [check-valid-until=no] http://snapshot.debian.org/archive/debian/20260918T000000Z trixie main' \
+      'deb [check-valid-until=no] http://snapshot.debian.org/archive/debian-security/20260918T000000Z trixie-security main' \
+      > /etc/apt/sources.list \
+    && rm -f /etc/apt/sources.list.d/debian.sources \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends \
+       bash binutils build-essential ca-certificates curl dpkg-dev file findutils \
+       fontconfig libgdk-pixbuf2.0-bin libglib2.0-bin gobject-introspection \
+       libfontconfig-dev libfreetype-dev libgdk-pixbuf-2.0-dev libglib2.0-dev \
+       libgtk-4-dev libharfbuzz-dev librsvg2-dev patchelf pkgconf python3 xz-utils \
+    && test "$(getconf GNU_LIBC_VERSION)" = 'glibc 2.41' \
+    && dpkg-query -W -f='${Package}=${Version}\n' > /etc/chromiator-builder-packages.txt \
+    && rm -rf /var/lib/apt/lists/*
+RUN curl --fail --location --silent --show-error \
+       https://static.rust-lang.org/dist/rust-1.97.1-x86_64-unknown-linux-gnu.tar.xz \
+       -o /tmp/rust.tar.xz \
+    && printf '%s  %s\n' 88f28fa9af20594179f85d6df67078dfd6fa93e2f6da5e1e9b0ac4997988ca4f /tmp/rust.tar.xz | sha256sum -c - \
+    && mkdir -p /tmp/rust-extract \
+    && tar -xf /tmp/rust.tar.xz -C /tmp/rust-extract \
+    && /tmp/rust-extract/rust-1.97.1-x86_64-unknown-linux-gnu/install.sh \
+       --prefix=/opt/rust --without=rust-docs \
+    && rm -rf /tmp/rust.tar.xz /tmp/rust-extract
+ENV PATH=/opt/rust/bin:/tools:$PATH
+WORKDIR /src

@@ -6,9 +6,11 @@ Both x86_64 bundles passed six private-Sway audit scenarios each; uploaded
 downloads passed SHA-256 verification. Release notes and build-info.json record
 the remaining compatibility, portal, and accessibility verification limits.
 
-Run from the checkout with Python 3.11+, Cargo, and the normal release-build
-dependencies. Version comes from Cargo.toml; only native x86_64/aarch64 builds
-are supported. Scripts do not install tools, alter remotes, or publish releases.
+Run from the checkout with Python 3.11+ and Cargo. AppImage runtime validation
+also requires host `readelf` from binutils. Version comes from
+Cargo.toml. The AppImage path currently supports x86_64 only; aarch64 has no
+pinned baseline or acceptance evidence. Flatpak remains an independent build
+path. Scripts do not install packages on the host, alter remotes, or publish.
 
 ```sh
 python3 scripts/build_distributions.py appimage
@@ -19,27 +21,102 @@ python3 scripts/build_distributions.py all
 Each run uses a new directory under target/distribution. Successful runs print
 the paths to versioned .AppImage/.flatpak bundles and SHA256SUMS. Failed builds
 remain available for diagnosis and never overwrite previous artifacts.
-Use `--check` to check executable availability without building.
+Use `--check` to check executable availability and pinned tool hashes without
+building. It does not certify the build image or package runtime.
 
 ## AppImage prerequisites
 
-Supply trusted, architecture-matching [linuxdeploy](https://github.com/linuxdeploy/linuxdeploy/releases)
-and [linuxdeploy-plugin-gtk.sh](https://github.com/linuxdeploy/linuxdeploy-plugin-gtk).
-Place both on PATH (or supply `--linuxdeploy /absolute/path/to/linuxdeploy.AppImage`).
-Use a current GTK4-capable plugin; linuxdeploy must include its AppImage output
-plugin. Verify upstream downloads before making them executable. Nothing is
-downloaded or executed automatically by the packaging script.
+The AppImage entrypoint builds inside a pinned Debian 13 x86_64 container with
+a proposed GLIBC 2.41 ceiling. `packaging/appimage/build-lock.json` records the
+amd64 base-image digest, 2026-09-18 Debian and security archive snapshot, Rust
+1.97.1 toolchain archive and SHA-256, and the exact linuxdeploy and GTK-plugin
+hashes. Debian archive signatures remain checked. The container build installs
+packages from that snapshot, checks GLIBC again after installation, records
+installed package versions, and verifies the Rust tarball before installation.
+The pinned Debian 13 x86_64 builder ran on 2026-10-03 with glibc 2.41; the Rust
+1.97.1 archive hash verified and offline release compilation passed. The staged
+AppDir audit passed for 119 ELF files, with maximum GLIBC 2.39 requirements,
+zero errors against 2.41, successful Debian `ldd -r` resolution, and loadable
+bundled Fontconfig/HarfBuzz providers. This is build and AppDir evidence;
+package runtime validation remains pending.
 
-The GTK plugin bundles GTK dependencies, resources, and runtime hooks. The script
-replaces its forced X11 setting with Wayland/X11 fallback while retaining an
-explicit GDK_BACKEND override. The host needs the GTK development tools used by
-that plugin, including GLib schema and GdkPixbuf loader tools.
+### Pinned AppImage output runtime
 
-Build on the oldest distribution you intend to support that supplies GTK >=4.12.
-A Fedora-built AppImage does not imply compatibility with older glibc systems.
-GPU drivers remain host dependencies. Test extracted execution as well as normal
-FUSE execution on clean target systems; do not advertise portability from a
-successful build alone.
+The output plugin receives the official, versioned AppImage/type2-runtime
+20251108 x86_64 asset. Recorded provenance includes source commit
+`dd6cebedcbddde9c82f89b011e8e1d40b6e43868`, release ID 260789861, asset ID
+326011592, size 944632, and SHA-256
+`2fca8b443c92510f1483a883f60061ad09b46b978b2631c807cd873a47ec260d`. The
+release is not marked immutable; the content hash is the build pin. The local
+asset's digest was checked against the GitHub API metadata.
+
+Inspect release metadata and retrieve the pinned asset with:
+
+```sh
+curl --fail --silent --show-error https://api.github.com/repos/AppImage/type2-runtime/releases/tags/20251108
+mkdir -p target/distribution-tools
+curl --fail --location --silent --show-error https://github.com/AppImage/type2-runtime/releases/download/20251108/runtime-x86_64 --output target/distribution-tools/runtime-x86_64-20251108
+printf '%s  %s\n' '2fca8b443c92510f1483a883f60061ad09b46b978b2631c807cd873a47ec260d' 'target/distribution-tools/runtime-x86_64-20251108' | sha256sum -c -
+```
+
+The build uses `--appimage-runtime` (default:
+`target/distribution-tools/runtime-x86_64-20251108`). Host and builder both
+verify the hash, size, ELF64 little-endian x86_64 identity, and GLIBC ceiling.
+The file is staged read-only at `/tools/runtime-x86_64` and passed as
+`LDAI_RUNTIME_FILE`, the runtime-file input consumed by
+[linuxdeploy-plugin-appimage](https://github.com/linuxdeploy/linuxdeploy-plugin-appimage/blob/master/src/main.cpp).
+The builder runs with `--network=none`; missing or mismatched input fails
+closed and cannot fall back to the mutable `continuous` runtime URL.
+
+Supply the exact retained x86_64 linuxdeploy and GTK plugin tools in
+`target/distribution-tools/` or pass `--linuxdeploy` and `--gtk-plugin` paths.
+Hash mismatches stop the build. The former `continuous` release URL is mutable;
+do not fetch it as a substitute for the pinned binary. Linuxdeploy contains
+the AppImage output plugin; the pinned GTK plugin uses local GLib, GTK, and
+GdkPixbuf tools. Podman builds from the narrow `packaging/appimage` context.
+After dependencies are staged, the source snapshot, Cargo vendor tree, and
+tools are mounted into the container; compilation and deployment run with
+network access disabled. Only the embedded Spectrum example is copied from
+`assets/`; user assets and unrelated checkout files are excluded.
+
+The GTK plugin bundles GTK dependencies, resources, and runtime hooks. The
+script replaces its forced X11 setting with Wayland/X11 fallback while retaining
+an explicit GDK_BACKEND override. Fontconfig and HarfBuzz, including their
+non-system dependencies, are explicitly requested from the Debian builder and
+must appear as loadable bundled providers. System font configuration and fonts
+remain host resources. GLIBC and GPU drivers remain host dependencies. The
+audited host SONAME set is `ld-linux-x86-64.so.2`, `libc.so.6`,
+`libgcc_s.so.1`, `libm.so.6`, `libresolv.so.2`, and `libvulkan.so.1`.
+The builder does not bundle GLIBC or GPU drivers.
+
+Before AppImage creation, `scripts/audit_appimage.py` checks every AppDir ELF,
+including GTK modules and image loaders, against GLIBC 2.41; resolves DT_NEEDED
+from the bundle or the lock's narrow host list; checks the reported Fontconfig
+and HarfBuzz imports against bundled providers; checks the loader cache and
+runtime hook for stale build paths; and runs relocation resolution with the
+Debian loader. The script also extracts and audits the completed AppImage, but
+that post-build audit has not run because output creation failed. The staged
+AppDir report is at
+`target/distribution/0.2.0-kj2p818g/appimage/output/abi-audit.json`.
+A passing static audit is not clean-system acceptance.
+
+The published v0.2.0 Fedora-built AppImage fails this proposed ceiling: seven
+bundled libraries require GLIBC 2.43, and Fontconfig/HarfBuzz providers are
+host-resolved. The 2026-10-03 output attempt predates the runtime pin and failed
+on appimagetool's mutable runtime fetch. The updated build command was rejected
+before execution by the current policy gate and was not retried. No candidate,
+candidate hash, or extracted-payload audit exists. The staged AppDir report at
+`target/distribution/0.2.0-kj2p818g/appimage/output/abi-audit.json` is not
+candidate evidence. Do not advertise Debian 13 compatibility until the updated
+build, actual artifact audit, and clean-runtime checks pass.
+
+When package launches are authorized on a clean target system, run
+`scripts/smoke_appimage.sh /absolute/package.AppImage /new/output/directory
+/absolute/fixture.png`. It records package/fixture hashes and separate normal
+FUSE and extracted-AppRun launch attempts. Exit status alone does not establish
+GUI, import, save, export, or accessibility success; inspect the window, logs,
+screenshots, and output files separately. This runner has not been executed in
+the current Stage 1 work.
 
 ## Flatpak prerequisites
 

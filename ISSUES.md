@@ -103,6 +103,13 @@ Unresolved issues are grouped by their primary ownership area and ordered by sev
 - [x] **THR-040** — `done` · P1 · Presets — Finalized human-readable preset JSON v2 as the only accepted user-preset format. It stores the complete intentional processing recipe, detaches image positions, excludes artwork/paths/export/UI/job state, and uses atomic XDG writes. Version 1 and malformed/incomplete files remain byte-for-byte untouched and appear as actionable diagnostics; no migration, rename, or automatic rewrite exists. Finalized 2026-07-16 with exact-version/missing-field/unknown-field, leak, round-trip, duplicate, atomic failure, and unchanged-file evidence; the user preset directory was hash-checked before and after this work.
 - [x] **THR-041** — `done` · P1 · Voronoi site editing — Treat each site's Source center color as authoritative and editable, with its image-picker coordinate retained only as optional provenance/convenience. Each site owns its own Target color. Present separate Source and Target swatches on the same site row and open the transactional custom color picker for either; Target edits affect classification output only, while Source edits move the cell center and follow THR-042 reset behavior. Derive OKLab, encoded-sRGB, and cylindrical HSV coordinates from the site's one canonical Source color so changing Color matching never uses stale per-space coordinates. After manual Source editing, visibly detach or clear the old image position; resampling or moving a marker explicitly reattaches it. Persist Source, Target, optional position, Influence, and lock together per site. Acceptance includes transparent/low-alpha sampling policy, color-picker precision/transactions, matching-mode transitions, detach/reattach, project/preset round trips, deterministic preview/export agreement, and unambiguous Source versus Target labeling. Cross-reference THR-013, THR-033, THR-040, and THR-044. Completed 2026-07-14. Evidence: canonical Source with derived OKLab/encoded-RGB/HSV coordinates, separate transactional Source/Target edits, detached/attached marker state, v4 persistence, and focused core plus GTK evidence.
 - [x] **THR-042** — `done` · P1 · Voronoi site replacement — Treat replacing a site's Source center as replacing that site's Source+Target pairing. A newly created site initially uses its sampled Source color as its Target. Thereafter, dragging, nudging, resampling, or directly color-editing that unlocked Source must always overwrite that same site's Target with the new Source color—even when the user previously customized the Target—and refresh the preview. Do not add follow/detach state or a confirmation: moving the center means abandoning the prior pairing and trying a new site+target. Merely selecting a site changes nothing. Make the reset immediately legible by updating both swatches during the completed adjustment; document undo belongs to THR-006, while THR-043 supplies deliberate protection. Acceptance includes create→move, nudge, resample, direct Source edit, customized Target overwrite, independent multi-site behavior, selection no-op, dirty/preview coalescing, project/preset round trips, and inspected Source/Result transitions. Cross-reference THR-038, THR-041, THR-043, THR-044, and THR-006. Completed 2026-07-14. Evidence: centralized create, drag, nudge, footprint, resample, and direct-Source replacement resets Target to Source; selection is a no-op. Expanded 2026-07-18: each replacement path now contributes one THR-006 document transaction; presets remain covered by THR-040.
+
+Historical clarification (2026-10-03): the current implementation preserves the
+authored Target when `VoronoiState::set_source` or `set_size` changes Source
+(`src/document.rs`; regression `site_mutations_preserve_target_and_lock_protects_every_parameter`
+in `tests/core.rs`). The completion narrative above records the earlier
+behavior and is stale as a description of current behavior; preserve it as
+history and reconcile the active product contract separately.
 - [x] **THR-043** — `done` · P1 · Voronoi locks — Give every site one visible lock protecting the complete Source-center+Target-color pair—the immutable site definition the creator has dialled in. A locked site remains selectable and inspectable but cannot be dragged, nudged, resampled, Source-edited, Target-edited, have its Influence changed, or be deleted until explicitly unlocked. Disable all relevant controls and give immediate explanatory feedback rather than silently ignoring input. Be mathematically honest: the lock freezes that site's own parameters, not its exact pixel-membership boundary, which can still move when another unlocked site or the global matching mode changes. New sites default unlocked; locking/unlocking alone does not change processing values or schedule a preview. Persist the lock with the site in projects and presets. Acceptance covers every pointer, keyboard, color-picker, Influence, and deletion path; accessible lock state; standard/narrow layouts; no mutation under lock; unlock→edit; global/neighbor changes without locked-parameter mutation; undo/dirty behavior; and project/preset round trips. Cross-reference THR-033, THR-041, THR-042, THR-044, THR-006, and THR-040. Completed 2026-07-14. Evidence: visible persisted site lock disables Source, Target, Influence, footprint and deletion; pointer/keyboard movement is rejected; lock toggles dirty state without scheduling preview. Expanded 2026-07-18: lock/unlock is undoable, while every refused locked mutation adds no history entry.
 - [x] **THR-044** — `done` · P1 · Voronoi data model — Refactor the native Voronoi recipe around independent sites rather than `ColorGroup { output_color, samples[] }`. Each site is the atomic cell definition: stable ID/order, canonical Source centerpoint in the selected three-dimensional color space, its own Target color, optional competitive weight (currently exposed as Influence), lock, and optional source-image position/sample metadata. For every visible pixel, compute the selected metric against the complete site set, apply the defined weight rule when enabled, choose the nearest eligible site, and assign that site's Target; cell boundaries are therefore derived from surrounding centerpoints, their weights, and the global metric rather than stored as site data. Ties remain deterministic and alpha policy remains deliberate. Locking freezes a site's centerpoint, weight, and Target but never promises a fixed boundary while neighboring sites, weights, or the metric change. Do not retain Color groups as a hidden processing abstraction unless they become purely optional organization with no shared Target semantics. Migrate existing v3 groups by flattening every sample into a site that inherits the former group's Output and preserves its own Source/Influence/position; define empty-group handling and bump/version the project schema safely. Update auto-initialization, processing, coverage, selection, editing, presets, export, CLI evidence, and tests together so preview/full export cannot disagree. Acceptance includes one-site-one-cell fixtures, unweighted/default-weight geometry, controlled weighted-boundary shifts, surrounding-site edits, multiple former samples sharing an inherited Target but becoming independently editable afterward, migration round trips, stable IDs/ties, all matching modes including THR-039 cylindrical HSV, locks, and inspected standard/narrow workflows. Completed 2026-07-14. Evidence: independent VoronoiSite model, site-ID coverage, stable order/ID ties, preserved weighted distance and alpha policy, true HSV cylinder, deterministic v3 flatten migration, v4 validation, 55 core tests, strict build gates, audit, and inspected standard/narrow captures.
 - [x] **THR-046** — `done` · P1 · Color pipeline — Audited the native and archived perceptual paths before implementation. Tagged RGB inputs transform from embedded ICC to canonical encoded sRGB in floating point with relative-colorimetric intent before linearization and OKLab; invalid/non-RGB profiles fail explicitly. The finalized current-only project v5 path always uses that managed decode, and THR-018 removed the former pre-release unmanaged reopen path. Perceptual matching remains exactly Cartesian OKLab `dL² + da² + db²` without axis normalization or UI-space distance. Automatic sites cluster an alpha-weighted bounded histogram of the complete source distribution and choose actual full-resolution Point samples, eliminating nearest-neighbor proxy phase loss. Influence scales the complete squared metric by `2^-clamp(Influence,-4,4)`, with its radial meaning documented. The current bounded linear-sRGB display/PNG/EXR policy is explicit; OKHSL UI and extended-gamut delivery remain correctly owned by THR-051/013/027/045. Completed 2026-07-15 and reconciled with the final format contract on 2026-07-16. Evidence: independent Display-P3 matrix fixture, tagged-sRGB/current-project tests, known OKLab colors/round trips, axis-discriminator and ±4 Influence assignments, checkerboard distribution regression, strict all-target Clippy, release build, 8/8 GTK audit, inspected standard Result and narrow Split artifacts with perceptual sidecars, and independent closeout review.
@@ -236,3 +243,129 @@ canvas in the earlier check. See `docs/BUG_HUNT_FOLLOWUP_2026-09-19.md` and
 > opt-in release checks, inspected images and a focused private-Sway transition
 > check pass. See `docs/TRANSITION_TEST_CLEANUP.md`; earlier records below are
 > historical. THR-066 remains open for pre-alpha format/preset cleanup.
+
+## Unresolved — release verification and distribution
+
+- [ ] **THR-070** — `in-progress` · P1 · Release evidence — Freeze v0.2.0, project v6,
+  preset v3, and all 19 built-ins as read-only golden anchors; generate compact
+  deterministic ramp, boundary, saturated/neutral, 256-alpha, and flat-art
+  fixtures. Record full winner-site IDs per pixel as well as rendered pixels;
+  coverage counts alone cannot establish partition identity. Compare preview,
+  export, PNG8 alpha/RGB, dimensions, embedded source bytes, reopened recipe,
+  width 0/100, smoothing, ordered hue operations, zero-site pass-through,
+  Desert Dusk, and target-only edits. Old v5/v2 files must still reject without
+  rewrite. User decision (2026-10-03): preserve existing rendering and saved
+  compatibility; document and test the exact conditions for source-alpha and
+  selected-Target preservation. This supersedes THR-066's earlier permission
+  for compatibility breaks within this task. No implementation or acceptance
+  is implied. Cross-reference
+  THR-061 and THR-066. Stage 0 is authorized for headless characterization;
+  GUI verification and acceptance remain pending. Headless result
+  (2026-10-03): five focused regressions pass with the first-capture generator
+  ignored. The 19 serialized presets and applied recipes, v6 project/source
+  reopen, hard and blended output, PNG8 alpha/Target membership, matching-space
+  and edit winner maps, smoothing, hue ordering, and zero-site behavior are
+  frozen. See `tests/fixtures/release-0.2.0/SHA256SUMS` and
+  `target/validation/stage-0/release-anchor-candidate/`. No GUI/Sway or clean
+  system launch was attempted, so THR-070 remains in progress.
+
+  Stage 0 update (2026-10-03): the user accepted the headless regression
+  evidence. GUI and workflow coverage was not accepted and remains open; THR-070
+  stays `in-progress`.
+
+- [ ] **THR-071** — `in-progress` · P0 · Distribution/runtime — Establish a reproducible
+  x86_64 package on a pinned build environment for the proposed Debian 13 /
+  glibc 2.41 minimum and current Fedora 44 native Wayland. Audit the complete
+  AppImage ELF/helper closure and host Fontconfig, HarfBuzz, and glycin
+  providers. The current artifact hash
+  `e5005adb8ed75796bbf222f919d3821695eb18bdcbec719a00aaa828e6168c70` matches
+  published v0.2.0; static inspection found seven bundled libraries requiring
+  GLIBC_2.43, while the main executable requires at most 2.35. Fontconfig and
+  HarfBuzz providers are host-resolved. This is a package-compatibility failure
+  against the proposed floor, not a clean Debian runtime reproduction. Verify
+  welcome decode fallback without masking artwork or Spectrum Example errors.
+  On a clean minimum-baseline machine, use a smoke harness with explicit
+  package/output paths and prebuilt fixtures, no Cargo build or `target/debug`
+  assumption; test default welcome launch, FUSE and extracted `AppRun`
+  separately, PNG import/export, and project save/reopen through the GUI.
+  Retain dependency reports, logs, screenshots, and output hashes. Cross-reference
+  THR-034, THR-035, and THR-066. The user authorized Stage 1 packaging build
+  and headless audit implementation in this turn; fresh GUI and clean-Debian
+  runtime verification remain blocked. The embedded welcome decoration now
+  uses the Rust raster decoder and can be omitted on decode failure. Both
+  headless welcome tests pass, including valid Spectrum pixel-byte equality.
+  A pinned Debian 13 x86_64 builder, explicit Fontconfig/HarfBuzz closure, and
+  fail-closed AppDir ABI audit are implemented; the retained v0.2.0 AppDir fails
+  the audit for seven GLIBC_2.43 libraries and missing providers as expected.
+  Planning-time status before the pinned runtime was supplied (2026-10-03):
+  the builder had not run and no compatible AppImage existed; see the current
+  Stage 1 result below.
+
+  Current Stage 1 result (2026-10-04; supersedes the planning-time statement
+  above that the pinned builder had not run): the Debian 13 x86_64 image
+  `3e74a6b29fcfaa36ce01a16c40f356ba68509920002a37360129defbf09ec537` built
+  with glibc 2.41, the Rust 1.97.1 archive hash verified, and offline release
+  compilation passed. The staged AppDir audit passed for 119 ELF files, maximum
+  GLIBC 2.39, zero errors against 2.41, Debian `ldd -r` resolution, and
+  loadable bundled Fontconfig/HarfBuzz providers. Its report is
+  `target/distribution/0.2.0-kj2p818g/appimage/output/abi-audit.json`.
+  The official AppImage type-2 runtime input is now versioned and hash-pinned:
+  release 20251108, source commit
+  `dd6cebedcbddde9c82f89b011e8e1d40b6e43868`, release ID 260789861, asset ID
+  326011592, 944632 bytes, SHA-256
+  `2fca8b443c92510f1483a883f60061ad09b46b978b2631c807cd873a47ec260d`.
+  Local verification matched the GitHub API digest; the release is versioned
+  but is not marked immutable. Host and builder verify the input, stage it
+  read-only, and pass it to the output plugin with network disabled. The
+  2026-10-03 attempt using the prior path failed on appimagetool's mutable
+  runtime fallback. The attempted command `python3 -B scripts/build_distributions.py
+  appimage > target/distribution/stage1-build-5.log 2>&1` was rejected before
+  execution with `approval required by policy, but AskForApproval is set to
+  Never`; it was not retried. No candidate/hash or extracted
+  payload audit exists. Packaging tests passed 13/13; AppImage `--check`,
+  Python compile, smoke-script syntax, and diff checks passed in the writer's
+  recorded results.
+  GUI was authorized but remains blocked by the execution-policy gate. The
+  Earlier (2026-10-03), inventory/preflight and SquashFS inspection attempts
+  were rejected with
+  `approval required by policy, but AskForApproval is set to Never`; they were
+  not retried, and current VM/runtime availability is unresolved. See
+  The prior attempt is recorded in `target/distribution/stage1-build-4.log`.
+  no `stage1-build-5.log` result exists. Runtime retrieval, exact CLI use, and
+  Runtime retrieval and provenance instructions are in `docs/DISTRIBUTION.md`;
+  verification history is in `docs/FUNCTIONAL_AUDIT.md`. THR-071 remains
+  `in-progress`; no packaging
+  acceptance or Stage 2 work is implied.
+
+- [ ] **THR-072** — `open` · P1 · Editing workflow proposal — After THR-070 and
+  THR-071 review, observe small-palette remapping, Target edits, independent
+  Source/Target editing, Influence, geometry, and hard/blended artwork results.
+  Present a bounded proposal around the existing Transition width, with one
+  undo transaction and clear Source-anchor/output, matching/blend-space, and
+  marker/export explanations. Make conflicting smoothing, hue, and empty-site
+  settings visible rather than promising exact tones or unchanged alpha when
+  those conditions are not met. Do not add a serialized mode, change defaults or
+  presets, claim a Target swatch always equals final output, or redesign the
+  engine here. THR-034, THR-035, and THR-061 are related; implementation needs
+  separate scope approval.
+
+- [ ] **THR-073** — `open` · P1 · Integrated workflow verification — After
+  separate scope approval, verify welcome → import → edit → compare → export →
+  save → reopen with preset and regression cases. Compare full output pixels,
+  dimensions, embedded source bytes, and reopened recipe; inspect marker-free
+  exports beside editor screenshots. Snapshot document, selection, history,
+  redo, dirty state, and output around dialog cancellation. Actual long-running
+  render/export cancellation remains a separate unverified follow-up; ordinary
+  dialog cancellation does not prove it. Invalid raster/project input
+  must leave the active document intact. Keep focused tests, full locked-suite
+  results, strict Clippy/build, screenshots, and artifacts; distinguish
+  automated evidence from human GNOME acceptance. Cross-reference THR-006,
+  THR-034, THR-035, THR-061, and THR-066.
+
+- [ ] **THR-074** — `open` · P2 · Deferred strict-palette mode — User-requested
+  follow-up (2026-10-03), outside the current implementation scope. Design an
+  opt-in strict-palette mode with explicit processing order, smoothing/alpha,
+  hue, empty-site, serialization, and compatibility behavior before coding.
+  Acceptance requires a separately approved contract and all-visible-pixel
+  palette/alpha tests; never reinterpret existing projects. Depends on THR-070
+  characterization and THR-072 conflict feedback.

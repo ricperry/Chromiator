@@ -1,0 +1,73 @@
+{
+  "version": 3,
+  "name": "Carbon Copy",
+  "description": "Two-color dark blue ink and cold pale paper",
+  "processing": {
+    "preprocessing": {
+      "input_smoothing": 0.0
+    },
+    "voronoi": {
+      "sites": [
+        {
+          "id": 1,
+          "order": 1,
+          "source_color": [
+            0.029556835,
+            0.029556835,
+            0.029556835,
+            1.0
+          ],
+          "target_color": [
+            0.00699541,
+            0.022173885,
+            0.059511237
+          ],
+          "influence": 0.0,
+          "locked": false,
+          "position": null,
+          "size": "Point"
+        },
+        {
+          "id": 2,
+          "order": 2,
+          "source_color": [
+            0.50888133,
+            0.50888133,
+            0.50888133,
+            1.0
+          ],
+          "target_color": [
+            0.7991027,
+            0.8468732,
+            0.8713671
+          ],
+          "influence": 0.0,
+          "locked": false,
+          "position": null,
+          "size": "Point"
+        }
+      ],
+      "next_site_id": 3,
+      "matching": "Perceptual",
+      "transition": {
+        "start": 0.5,
+        "midpoint": 0.5,
+        "end": 0.5
+      }
+    },
+    "steps": [
+      {
+        "working_space": "Oklch",
+        "components": "Hue",
+        "operation": {
+          "RotateHue": {
+            "degrees": 0.0
+          }
+        },
+        "pass_through": "PreserveUnselectedComponents",
+        "alpha": "PassThroughStraight",
+        "conversion_back": "KeepLinearSrgbF32"
+      }
+    ]
+  }
+}
