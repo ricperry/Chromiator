@@ -176,3 +176,11 @@ Chromiator is free software under the GNU General Public License, version 3 or
 any later version. See [LICENSE.md](LICENSE.md) for the unmodified license text
 and [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for library and color-science
 credits. Third-party components retain their respective licenses.
+
+## Support development
+
+If you find Chromiator useful, you can support development with an optional
+[tip on Ko-fi](https://ko-fi.com/silentbutdigitaldesigns).
+
+For artwork and design products, visit
+[Silent But Digital Designs](https://silentbutdigitaldesigns.com).
