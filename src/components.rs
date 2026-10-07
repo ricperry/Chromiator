@@ -48,6 +48,8 @@ mod imp {
         #[template_child]
         pub document_menu: gtk::TemplateChild<gtk::MenuButton>,
         #[template_child]
+        pub presets_menu: gtk::TemplateChild<gtk::MenuButton>,
+        #[template_child]
         pub sidebar_button: gtk::TemplateChild<gtk::ToggleButton>,
         #[template_child]
         pub file_spacer: gtk::TemplateChild<gtk::Separator>,
@@ -160,6 +162,9 @@ impl ChromiatorMainShell {
     }
     pub fn document_menu(&self) -> gtk::MenuButton {
         self.imp().document_menu.get()
+    }
+    pub fn presets_menu(&self) -> gtk::MenuButton {
+        self.imp().presets_menu.get()
     }
     pub fn sidebar_button(&self) -> gtk::ToggleButton {
         self.imp().sidebar_button.get()

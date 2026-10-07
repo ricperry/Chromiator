@@ -24,6 +24,7 @@
         <child type="start"><object class="GtkButton" id="undo_button"><property name="icon-name">edit-undo-symbolic</property><property name="tooltip-text">Undo document change (Ctrl+Z)</property><property name="sensitive">false</property></object></child>
         <child type="start"><object class="GtkButton" id="redo_button"><property name="icon-name">edit-redo-symbolic</property><property name="tooltip-text">Redo document change (Ctrl+Shift+Z)</property><property name="sensitive">false</property></object></child>
         <child type="end"><object class="GtkMenuButton" id="document_menu"><property name="icon-name">open-menu-symbolic</property><property name="tooltip-text">Document Menu</property></object></child>
+        <child type="end"><object class="GtkMenuButton" id="presets_menu"><property name="label">Presets</property><property name="tooltip-text">Select, load, or save processing presets</property></object></child>
         <child type="end"><object class="GtkToggleButton" id="sidebar_button"><property name="icon-name">sidebar-show-symbolic</property><property name="tooltip-text">Show adjustments</property><property name="active">true</property></object></child>
         <child type="end"><object class="GtkButton" id="export_button"><property name="tooltip-text">Export full-resolution image (Ctrl+Shift+E)</property><property name="sensitive">false</property><property name="label">Export</property></object></child>
       </object>

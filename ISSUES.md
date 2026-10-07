@@ -352,6 +352,25 @@ canvas in the earlier check. See `docs/BUG_HUNT_FOLLOWUP_2026-09-19.md` and
   `in-progress`; this is test readiness, not acceptance. No further commit,
   push, release, or Stage 2 work is implied.
 
+  Bounded cloud update (2026-10-04): the unchanged candidate SHA-256
+  `a123e544a6069701235a338c2a0174a972db1fe7e5a0a2f782318732c3bdf621`
+  passed extracted GUI testing on Debian 13.6/glibc 2.41, XFCE/X11 with a
+  Cairo renderer environment override and no host-library replacement. All
+  five 256 × 128 GUI exports matched golden RGBA exactly; hard output used
+  five RGB colors with exact source alpha at smoothing/hue 0. Save, close,
+  relaunch, and reopen preserved golden v6 source bytes and recipe. Static
+  audit: 119 ELF files, zero errors, maximum GLIBC 2.39. Evidence reported by
+  the cloud test handoff: ChatGPT Library `libfile_edc44f21a56c81918da4a0391cefe8ec`;
+  detailed qualifications are in `docs/FUNCTIONAL_AUDIT.md`.
+  Ordinary FUSE launch failed because `/dev/fuse` was absent; stock extracted
+  launch aborted on missing `libGLESv2.so.2`. Development tools were installed,
+  so the Cairo pass is not pristine-runtime acceptance. THR-071 stays
+  `in-progress`: stock extracted dependency/prerequisite verification, clean
+  minimum-runtime workflow, FUSE-capable launch, and Fedora GNOME/Wayland GUI
+  verification remain open. Fedora native CUA was unavailable. Cross-reference
+  the newly recorded chooser mismatch THR-075. No implementation is authorized
+  by this evidence-recording update.
+
 - [ ] **THR-072** — `open` · P1 · Editing workflow proposal — After THR-070 and
   THR-071 review, observe small-palette remapping, Target edits, independent
   Source/Target editing, Influence, geometry, and hard/blended artwork results.
@@ -384,3 +403,48 @@ canvas in the earlier check. See `docs/BUG_HUNT_FOLLOWUP_2026-09-19.md` and
   Acceptance requires a separately approved contract and all-visible-pixel
   palette/alpha tests; never reinterpret existing projects. Depends on THR-070
   characterization and THR-072 conflict feedback.
+
+- [ ] **THR-075** — `open` · P2 · File-opening UX — Ctrl+O's tooltip advertises
+  opening an image or project, but the invoked image-only chooser rejects
+  `.chromiator` files. Reproduced in the bounded Debian 13.6/XFCE/X11 Cairo
+  cloud test of the Stage 1 candidate; the dedicated Open Project action
+  successfully opened the same project. Evidence: ChatGPT Library
+  `libfile_edc44f21a56c81918da4a0391cefe8ec`. Align the advertised Ctrl+O
+  behavior and its actual chooser/routing in a separately scoped fix. Acceptance
+  should exercise Ctrl+O for a supported image and a current project according
+  to the settled action contract, confirm accurate tooltip/filter/error text,
+  and retain the working dedicated Open Project route. Cross-reference THR-071
+  and THR-073. No implementation or completion is claimed.
+
+- [x] **THR-076** — `done` · P1 · Preset menu and Color mapping workspace —
+  Move Select Preset, Load Preset, and Save Preset from the inspector to the
+  header menu. Selection combines built-in looks with the XDG personal
+  PresetStore and requires explicit Apply; Cancel leaves the document alone.
+  Load current preset v3 JSON or a validated project v6 as processing settings
+  only, preserving the active source, project association, viewport, and export
+  defaults; application is one DocumentSession undo operation. Save writes only
+  current processing settings. Make Color mapping collapsible and move its
+  explanatory subtext into control tooltips. The implementation and headless
+  loader/history tests are present. Private-Sway evidence verifies standard
+  and narrow collapsed/expanded layouts, built-in and personal preset
+  application, Cancel/reopen, JSON load, and saving the current recipe. The
+  project-as-preset reader is headlessly tested with a v6 fixture; its chooser
+  workflow was not independently verified. Narrow 1024×600 screenshots use a
+  semantic pane adjustment to position 610; default splitter placement remains
+  tracked under THR-065. Full AT-SPI readback and real GNOME/portal acceptance
+  remain unverified; see THR-077. The user accepted the accumulated work and
+  confirmed the intended UI behavior on 2026-10-07. This closes the product
+  change without claiming the separate automation or packaging gates passed.
+
+- [ ] **THR-077** — `open` · P2 · GTK/AT-SPI audit crashes during dynamic UI
+  queries — On GTK 4.22.5, GLib 2.88.3, and AT-SPI 2.60.7, the blanket semantic
+  query can segfault around a disappearing/rebuilt widget during preset or file
+  chooser transitions. The retained gdb trace reaches AT-SPI
+  `handle_accessible_method` → `g_variant_new` → SIGSEGV at
+  `.codex-work/evidence/ui-run-20261007-121617-32737/app.stdout.log`. A second
+  probe with accessibility relations disabled and dispatch-only reads also
+  failed during an asynchronous chooser transition, so the exact trigger is
+  unisolated. Do not change app accessibility relations or descriptions until
+  a minimal reproducer identifies the fault. This blocks blanket AT-SPI
+  acceptance for THR-076; visible workflows and screenshots remain separately
+  recorded. Cross-reference THR-076 and THR-073.

@@ -17,14 +17,18 @@ impl TransitionControls {
             gtk::accessible::Property::Label("Transition width percent"),
             gtk::accessible::Property::Description("Color-space transition width from 0 to 100 percent; zero keeps hard boundaries between sites. This is not an image blur."),
         ]);
+        width.set_tooltip_text(Some("Color-space transition width from 0 to 100 percent; zero keeps hard boundaries between sites. This is not an image blur."));
         width.connect_input(|spin| {
             chromiator::picker::preserve_displayed_precision(
                 spin.text().as_str(), spin.value(), spin.digits(),
             ).map(Ok)
         });
         let space = gtk::DropDown::from_strings(&["Oklab", "Linear RGB"]);
-        space.update_property(&[gtk::accessible::Property::Label("Transition blend space")]);
-        group.append(&inspector_control_row("_Transition width", "Percent; 0 keeps hard boundaries", &width));
+        space.update_property(&[
+            gtk::accessible::Property::Label("Transition blend space"),
+            gtk::accessible::Property::Description("Mix Target colors independently of Source matching; available when Transition width is above zero"),
+        ]);
+        group.append(&inspector_control_row("_Transition width", "Color-space transition width from 0 to 100 percent; zero keeps hard boundaries between sites. This is not an image blur.", &width));
         group.append(&inspector_control_row("_Blend space", "Mix Target colors independently of Source matching; available when Transition width is above zero", &space));
         let controls = Self { width, space };
         controls.sync(TransitionProfile::HARD);

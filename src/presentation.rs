@@ -197,6 +197,7 @@ pub(super) fn present_color_picker(
         state.picker_plane_render_max_us = 0;
         state.picker_plane_render_count = 0;
     }
+    sync_contextual_chrome(ui, state);
 
     let picker_title = match purpose {
         PickerPurpose::Source | PickerPurpose::NewSite => "Pick a source color",
@@ -797,6 +798,7 @@ pub(super) fn present_color_picker(
             *ui.audit_picker_cancel.borrow_mut() = None;
             *ui.audit_picker_select.borrow_mut() = None;
             *ui.audit_picker_plane.borrow_mut() = None;
+            sync_contextual_chrome(&ui, &state);
             sync_document_history_ui(&ui, &state);
             let focus = ui.groups.clone();
             glib::idle_add_local_once(move || {

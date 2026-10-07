@@ -210,15 +210,30 @@ pub(super) fn maybe_start_ui_audit(ui: &Rc<Ui>, state: &Rc<RefCell<State>>) {
                 && target_only
                 && action_state.borrow().session.selection().selected == selected_before
         } else if action_scenario == "presets" {
-            let applied = action_ui.preset_model.n_items() > 1;
-            if applied {
+            let selected = action_ui
+                .window
+                .application()
+                .and_then(|app| app.lookup_action("select-preset"));
+            if let Some(selected) = selected {
+                selected.activate(None);
+            }
+            let selected = action_ui.preset_dialog.is_visible()
+                && action_ui.preset_model.n_items() > 1;
+            if selected {
                 action_ui.preset_dropdown.set_selected(1);
-                action_ui.preset_save.emit_clicked();
+                action_ui.preset_apply.emit_clicked();
+                if let Some(save) = action_ui
+                    .window
+                    .application()
+                    .and_then(|app| app.lookup_action("save-preset"))
+                {
+                    save.activate(None);
+                }
                 if let Some(cancel) = cloned_control(&action_ui.audit_preset_cancel) {
                     cancel.emit_clicked();
                 }
             }
-            applied
+            selected
         } else if action_scenario == "responsive" {
             action_ui.window.set_default_size(700, 700);
             action_ui.sidebar_button.set_active(false);
@@ -291,6 +306,7 @@ pub(super) fn maybe_start_ui_audit(ui: &Rc<Ui>, state: &Rc<RefCell<State>>) {
                 && current.session.selection().selected.is_some()
         } else if assert_scenario == "presets" {
             !current.picker_visible
+                && !assert_ui.preset_dialog.is_visible()
                 && assert_ui.audit_preset_name.borrow().is_none()
                 && current.session.undo_len() == initial_history + 1
                 && current.scheduler.current_generation() > initial_generation

@@ -90,6 +90,37 @@ impl Preset {
     pub fn recipe(&self) -> Recipe {
         self.processing.recipe()
     }
+
+    /// Reads and validates one current-format user preset file.
+    pub fn load(path: &Path) -> Result<Self> {
+        read_preset(path)
+    }
+
+    /// Reads a current preset or extracts processing settings from a current project.
+    ///
+    /// Project loading deliberately goes through the validated project reader, then copies only
+    /// its recipe into a preset. Source bytes, interpretation, export defaults, and document
+    /// identity remain outside the returned value.
+    pub fn load_from_file(path: &Path) -> Result<Self> {
+        match path.extension().and_then(|extension| extension.to_str()) {
+            Some(extension) if extension.eq_ignore_ascii_case("json") => Self::load(path),
+            Some(extension) if extension.eq_ignore_ascii_case("chromiator") => {
+                let document = crate::project::open(path).with_context(|| {
+                    format!("cannot load project {} as a preset", path.display())
+                })?;
+                let stem = path
+                    .file_stem()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .into_owned();
+                Self::new(&stem, None, &document.recipe)
+                    .or_else(|_| Self::new("Loaded Project", None, &document.recipe))
+            }
+            _ => bail!(
+                "unsupported preset file extension; choose a current .chromiator project or preset .json file"
+            ),
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

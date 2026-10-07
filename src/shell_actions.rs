@@ -36,6 +36,66 @@ pub(super) fn replacement_handler(
     button.connect_clicked(move |_| request_replacement(replacement, &ui, &state));
 }
 
+fn preset_load_filter() -> gtk::FileFilter {
+    let filter = gtk::FileFilter::new();
+    filter.set_name(Some("Chromiator projects and presets"));
+    filter.add_suffix("chromiator");
+    filter.add_suffix("json");
+    filter
+}
+
+pub(super) fn load_preset_dialog(ui: &Rc<Ui>, state: &Rc<RefCell<State>>) {
+    if !preset_actions_allowed(ui, state) {
+        return;
+    }
+    let filter = preset_load_filter();
+    let filters = gio::ListStore::new::<gtk::FileFilter>();
+    filters.append(&filter);
+    let dialog = gtk::FileDialog::builder()
+        .title("Load Preset")
+        .filters(&filters)
+        .default_filter(&filter)
+        .build();
+    let window = ui.window.clone();
+    let ui = ui.clone();
+    let state = state.clone();
+    set_preset_dialog_open(&ui, &state, true);
+    glib::spawn_future_local(async move {
+        let path = dialog
+            .open_future(Some(&window))
+            .await
+            .ok()
+            .and_then(|file| file.path());
+        set_preset_dialog_open(&ui, &state, false);
+        if let Some(path) = path {
+            start_preset_load(&ui, &state, path);
+        }
+    });
+}
+
+fn start_preset_load(ui: &Rc<Ui>, state: &Rc<RefCell<State>>, path: PathBuf) {
+    let Some((sender, token)) = begin_job(ui, state, "Reading preset file…") else {
+        return;
+    };
+    thread::spawn(move || {
+        let generation = token.generation();
+        let _ = sender.send(Work::Progress(
+            generation,
+            0.1,
+            "Validating preset file…",
+        ));
+        let result = Preset::load_from_file(&path).and_then(|preset| {
+            if token.is_current() {
+                Ok(preset)
+            } else {
+                anyhow::bail!("preset load cancelled")
+            }
+        })
+        .map_err(|error| format!("{error:#}"));
+        let _ = sender.send(Work::PresetLoaded(generation, Box::new(result)));
+    });
+}
+
 fn request_replacement(replacement: Replacement, ui: &Rc<Ui>, state: &Rc<RefCell<State>>) {
     let dirty = state
         .borrow()
@@ -495,6 +555,21 @@ pub(super) fn poll(ui: &Rc<Ui>, state: Rc<RefCell<State>>) {
                         }
                     }
                 }
+                Work::PresetLoaded(generation, result) => {
+                    let current = state.borrow().jobs.is_current(generation);
+                    if !state.borrow_mut().jobs.acknowledge(generation) {
+                        continue;
+                    }
+                    finish_job(&ui, &state);
+                    if !current {
+                        ui.status.set_label("Cancelled");
+                        continue;
+                    }
+                    match *result {
+                        Ok(preset) => super::apply_loaded_preset(&ui, &state, preset),
+                        Err(error) => self::error(&ui, "Could not load preset", &error),
+                    }
+                }
                 Work::Save(generation, result) => {
                     let current = state.borrow().jobs.is_current(generation);
                     if !state.borrow_mut().jobs.acknowledge(generation) {
@@ -576,6 +651,24 @@ mod project_filter_tests {
             ("Artwork.ChRoMiAtOr", true),
             ("Artwork.threshiator", false),
             ("Artwork.chromiator.bak", false),
+            ("Artwork.png", false),
+        ] {
+            let info = gio::FileInfo::new();
+            info.set_display_name(name);
+            assert_eq!(filter.match_(&info), expected, "chooser filter: {name}");
+        }
+    }
+
+    #[test]
+    #[ignore = "requires a display; run in the private Sway session"]
+    fn preset_load_filter_accepts_current_project_and_json_files() {
+        gtk::init().expect("GTK display required for file-filter regression");
+        let filter = preset_load_filter();
+        for (name, expected) in [
+            ("Artwork.chromiator", true),
+            ("Artwork.CHROMIATOR", true),
+            ("Arcade Four.json", true),
+            ("Arcade Four.JSON", true),
             ("Artwork.png", false),
         ] {
             let info = gio::FileInfo::new();

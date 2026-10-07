@@ -119,6 +119,47 @@ handoff includes the same candidate, fixtures, exact source snapshot and
 patches, checksums, audit reports, prerequisites, and GUI/parity instructions.
 No additional commit, push, PR, release, main update, or Stage 2 work occurred.
 
+### Bounded Debian cloud result (2026-10-04; qualified pass)
+
+The cloud test handoff reports results for the unchanged experimental AppImage,
+SHA-256 `a123e544a6069701235a338c2a0174a972db1fe7e5a0a2f782318732c3bdf621`.
+Evidence is retained in ChatGPT Library as `libfile_edc44f21a56c81918da4a0391cefe8ec`.
+This local update records the reported cloud evidence; it does not rerun or
+independently reverify those GUI actions.
+
+Environment: Debian 13.6, glibc 2.41, XFCE/X11, with development tools installed.
+Extracted AppRun worked with a Cairo renderer environment override and without
+replacing host libraries. This is a qualified Cairo/X11 result, not a pristine
+runtime, stock launch, Fedora, or Wayland acceptance result.
+
+- Five GUI-generated exports were 256 × 128 and matched the golden RGBA pixels
+  exactly. At hard width, smoothing 0 and hue 0, output used five RGB colors and
+  preserved source alpha exactly. These conditions do not promise exact Target
+  tones or source alpha under smoothing or post-mapping hue operations.
+- Save, close, relaunch, and reopen of the golden v6 project preserved its
+  embedded source bytes and recipe unchanged.
+- The cloud static audit passed: 119 ELF files, zero errors, maximum GLIBC
+  requirement 2.39 against the 2.41 ceiling.
+- Ordinary FUSE launch failed because `/dev/fuse` was absent. This records the
+  cloud environment's mount limitation; a FUSE-capable launch remains untested.
+- Stock extracted launch aborted because `libGLESv2.so.2` was missing. The
+  successful Cairo override does not resolve that stock-runtime dependency.
+
+The workflow also exposed THR-075: the Ctrl+O tooltip advertises image or
+project opening, but its image-only chooser rejects `.chromiator` files. The
+dedicated Open Project action worked. Record this as an open UX defect rather
+than inferring a project-format failure.
+
+Stage 1 / THR-071 remains **in progress, acceptance pending**. Remaining gates:
+resolve and verify the stock extracted-launch dependency/prerequisite contract;
+repeat the supported workflow on a clean minimum-runtime system without relying
+on development packages; verify ordinary launch on a FUSE-capable system; and
+complete Fedora GNOME/Wayland GUI import/export/save/reopen verification. Native
+CUA control was unavailable for the Fedora task, so that gate remains open.
+The qualified cloud result supplies bounded workflow evidence without closing
+the broader THR-073 integrated-workflow scope. This documentation update makes
+no implementation change, commit, push, or acceptance claim.
+
 ### Evidence at planning time
 
 - `main` and live `origin/main` are `f2c74ab`; the live v0.2.0 release tag is
@@ -305,3 +346,60 @@ Use `.agents/skills/gtk-wayland-debug/SKILL.md`: wait, scoped controls, inspect,
 semantic action, readback. Use coordinates only for spatial canvas interactions.
 Retain raw logs, screenshots, and output artifacts; stop the private session
 when finished. Native automation does not replace human GNOME acceptance.
+
+### Preset menu and Color mapping follow-up (2026-10-07)
+
+User acceptance: the user confirmed that the UI works as intended and accepted
+the accumulated work on 2026-10-07. THR-076 is closed. The automation limitation
+THR-077 and remaining THR-071 packaging checks remain separate follow-ups; this
+acceptance does not manufacture missing runtime evidence.
+
+The preset commands now live in the header menu. The selector requires Apply,
+supports Cancel/reopen, combines built-in looks with the XDG personal store,
+and distinguishes personal entries. Load accepts current v3 preset JSON and
+current v6 project archives. Project loading uses the validated `project::open`
+reader on the file worker, then builds a detached `Preset` from its recipe;
+source bytes, interpretation, export defaults, and document identity are not
+replaced. Save writes processing settings only. The Color mapping controls now
+sit inside a collapsed-by-default disclosure, with their explanations in
+tooltips and accessible descriptions.
+
+Headless coverage exercises the real loader against
+`tests/fixtures/release-0.2.0/desert-dusk-v6.chromiator` and
+`resources/presets/arcade-four.json`. A temporary v6 copy includes a source
+position to verify that project-derived preset sites detach. Applying the
+imported JSON through `EditCommand::ReplaceRecipe` in `DocumentSession` creates
+one undo step;
+undo/redo preserve the active source, interpretation, and export defaults. A
+rejected v5 project leaves the active document and existing undo/redo history
+unchanged. `cargo test --locked --test core preset` passed 14 tests; the focused
+loader, session-apply, and rejected-project tests also passed individually.
+Binary tests passed 16 tests with 2 display-only cases ignored; the locked GTK
+build and strict binary Clippy passed.
+
+Private-Sway screenshots show the header and collapsed/expanded mapping section
+at standard size (`.codex-work/evidence/ui-run-20261007-120516-18881/01-collapsed.png`,
+`02-expanded.png`) and the adjusted 1024×600 layout
+(`.codex-work/evidence/ui-run-20261007-123435-41527/15-narrow-adjusted-expanded.png`,
+`16-narrow-adjusted-collapsed.png`). `17-narrow-presets-menu.png` shows all
+three menu entries and `18-matching-tooltip.png` shows the moved explanation.
+Focused interactions applied a built-in and an XDG personal preset, verified
+Undo availability, cancelled and reopened the selector, loaded Arcade Four
+JSON, and saved matching processing JSON at
+`/tmp/chromiator-preset-menu-check/data/chromiator/presets/preset-4824c10d7b76b422.json`.
+The narrow capture used a semantic pane adjustment to position 610; default
+splitter placement remains tracked by THR-065. The `.chromiator` file chooser
+flow was not independently verified.
+
+Full semantic readback is still blocked by a reproducible AT-SPI client crash
+around dynamic widget removal/rebuild during a blanket object-path query. The
+retained gdb trace at
+`.codex-work/evidence/ui-run-20261007-121617-32737/app.stdout.log` reaches
+`handle_accessible_method` → `g_variant_new` → SIGSEGV on GTK 4.22.5, GLib
+2.88.3, and AT-SPI 2.60.7. A temporary relations-disabled, dispatch-only probe
+also failed near an asynchronous chooser transition; the exact trigger remains
+unisolated, so the application's accessibility descriptions and relations were
+left unchanged. THR-077 tracks this harness limitation. Full AT-SPI coverage,
+project chooser readback, and real GNOME/portal acceptance remain unverified;
+these automated results alone do not establish those broader checks. The
+subsequent user acceptance of THR-076 is recorded above.

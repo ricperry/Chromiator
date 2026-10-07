@@ -1,5 +1,5 @@
 use std::fs;
-use std::io::Write;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
@@ -26,6 +26,7 @@ use chromiator::processing::{
 use chromiator::project;
 use chromiator::raster;
 use chromiator::scheduler::{JobCoordinator, LatestGeneration, PreviewScheduler, ProgressTracker};
+use chromiator::session::{DocumentSession, EditCommand};
 use chromiator::starter_looks::{STARTER_LOOKS, apply_starter_look, recipe_for_starter_look};
 use chromiator::voronoi::{auto_initialize, linear_rgb_to_oklab, reattach_site, sample_color};
 use chromiator::workflow::{
@@ -675,6 +676,23 @@ fn write_project_fixture(path: &Path, manifest: &serde_json::Value, source: &[u8
     archive.finish().unwrap();
 }
 
+fn read_project_fixture(path: &Path) -> (serde_json::Value, Vec<u8>) {
+    let mut archive = zip::ZipArchive::new(fs::File::open(path).unwrap()).unwrap();
+    let mut manifest = String::new();
+    archive
+        .by_name("manifest.json")
+        .unwrap()
+        .read_to_string(&mut manifest)
+        .unwrap();
+    let mut source = Vec::new();
+    archive
+        .by_name("source/original")
+        .unwrap()
+        .read_to_end(&mut source)
+        .unwrap();
+    (serde_json::from_str(&manifest).unwrap(), source)
+}
+
 #[test]
 fn preset_v3_roundtrips_complete_recipe_and_v2_is_rejected_without_rewrite() {
     let root = tempfile::tempdir().unwrap();
@@ -725,6 +743,159 @@ fn recipe_for_detached_sites(recipe: &Recipe) -> Recipe {
         site.position = None;
     }
     detached
+}
+
+#[test]
+fn preset_file_loader_extracts_v6_projects_and_current_v3_json() {
+    let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/release-0.2.0/desert-dusk-v6.chromiator");
+    let project_document = project::open(&fixture).unwrap();
+    let imported_project = Preset::load_from_file(&fixture).unwrap();
+    assert_eq!(imported_project.version, 3);
+    assert_eq!(imported_project.name, "desert-dusk-v6");
+    assert_eq!(
+        imported_project.recipe(),
+        recipe_for_detached_sites(&project_document.recipe)
+    );
+    assert!(
+        imported_project
+            .recipe()
+            .voronoi
+            .sites
+            .iter()
+            .all(|site| site.position.is_none())
+    );
+
+    // The released v6 fixture has detached sites already. Attach one in a temporary copy to
+    // prove the project-to-preset path also strips image positions.
+    let (mut manifest, source_bytes) = read_project_fixture(&fixture);
+    manifest["recipe"]["voronoi"]["sites"][0]["position"] = serde_json::json!([0.25, 0.75]);
+    let directory = tempfile::tempdir().unwrap();
+    let attached_project = directory.path().join("attached.chromiator");
+    write_project_fixture(&attached_project, &manifest, &source_bytes);
+    let attached_document = project::open(&attached_project).unwrap();
+    assert_eq!(
+        attached_document.recipe.voronoi.sites[0].position,
+        Some([0.25, 0.75])
+    );
+    let imported_attached_project = Preset::load_from_file(&attached_project).unwrap();
+    assert_eq!(
+        imported_attached_project.recipe(),
+        recipe_for_detached_sites(&attached_document.recipe)
+    );
+
+    let preset_file = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("resources/presets/arcade-four.json");
+    let imported_json = Preset::load_from_file(&preset_file).unwrap();
+    assert_eq!(imported_json.version, 3);
+    assert_eq!(imported_json.name, "Arcade Four");
+    assert_eq!(imported_json, Preset::load(&preset_file).unwrap());
+    assert!(
+        imported_json
+            .recipe()
+            .voronoi
+            .sites
+            .iter()
+            .all(|site| site.position.is_none())
+    );
+
+    let uppercase_json = directory.path().join("Arcade Four.JSON");
+    fs::copy(&preset_file, &uppercase_json).unwrap();
+    assert_eq!(
+        Preset::load_from_file(&uppercase_json).unwrap(),
+        imported_json
+    );
+}
+
+#[test]
+fn imported_processing_preset_uses_one_session_edit_and_preserves_document_identity() {
+    let project_file = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/release-0.2.0/desert-dusk-v6.chromiator");
+    let mut session = DocumentSession::default();
+    session.load(project::open(&project_file).unwrap()).unwrap();
+    let before = session.document_cloned().unwrap();
+
+    let preset_file = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("resources/presets/arcade-four.json");
+    let preset = Preset::load_from_file(&preset_file).unwrap();
+    let replacement_recipe = preset.recipe();
+    let change = session
+        .edit(EditCommand::ReplaceRecipe(replacement_recipe.clone()), None)
+        .unwrap();
+    assert!(change.changed);
+    assert!(change.preview_required);
+    assert_eq!(session.undo_len(), 1);
+    assert_eq!(session.redo_len(), 0);
+
+    let after = session.document().unwrap();
+    assert_eq!(after.recipe, replacement_recipe);
+    assert!(after.dirty);
+    assert_eq!(after.source_name, before.source_name);
+    assert_eq!(after.source_bytes, before.source_bytes);
+    assert!(after.source.shares_storage_with(&before.source));
+    assert_eq!(after.interpretation, before.interpretation);
+    assert_eq!(after.export_defaults, before.export_defaults);
+
+    session.undo().unwrap();
+    assert_eq!(session.document().unwrap().recipe, before.recipe);
+    assert!(!session.document().unwrap().dirty);
+    assert_eq!(session.undo_len(), 0);
+    assert_eq!(session.redo_len(), 1);
+    session.redo().unwrap();
+    assert_eq!(session.document().unwrap().recipe, replacement_recipe);
+    assert!(session.document().unwrap().dirty);
+    assert_eq!(session.undo_len(), 1);
+    assert_eq!(session.redo_len(), 0);
+    assert!(
+        session
+            .document()
+            .unwrap()
+            .source
+            .shares_storage_with(&before.source)
+    );
+}
+
+#[test]
+fn invalid_project_as_preset_leaves_active_document_and_history_unchanged() {
+    let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/release-0.2.0/desert-dusk-v6.chromiator");
+    let (mut manifest, source_bytes) = read_project_fixture(&fixture);
+    manifest["version"] = serde_json::json!(5);
+    let directory = tempfile::tempdir().unwrap();
+    let legacy_project = directory.path().join("legacy.chromiator");
+    write_project_fixture(&legacy_project, &manifest, &source_bytes);
+
+    let mut session = DocumentSession::default();
+    session.load(project::open(&fixture).unwrap()).unwrap();
+    session.edit(EditCommand::SetSmoothing(1.25), None).unwrap();
+    session.edit(EditCommand::SetHue(23.0), None).unwrap();
+    session.undo().unwrap();
+    let before = session.document_cloned().unwrap();
+    let undo_before = session.undo_len();
+    let redo_before = session.redo_len();
+
+    let result = Preset::load_from_file(&legacy_project);
+    assert!(result
+        .as_ref()
+        .is_err_and(|error| format!("{error:#}").contains("version 5")));
+    if let Ok(preset) = result {
+        session
+            .edit(EditCommand::ReplaceRecipe(preset.recipe()), None)
+            .unwrap();
+    }
+
+    let after = session.document().unwrap();
+    assert_eq!(after.source_name, before.source_name);
+    assert_eq!(after.source_bytes, before.source_bytes);
+    assert!(after.source.shares_storage_with(&before.source));
+    assert_eq!(after.interpretation, before.interpretation);
+    assert_eq!(after.recipe, before.recipe);
+    assert_eq!(after.export_defaults, before.export_defaults);
+    assert_eq!(after.dirty, before.dirty);
+    assert_eq!(session.undo_len(), undo_before);
+    assert_eq!(session.redo_len(), redo_before);
+    assert!(session.can_undo());
+    assert!(session.can_redo());
 }
 
 #[test]

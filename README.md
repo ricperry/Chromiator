@@ -97,6 +97,10 @@ leaves the original value alone.
 | Transition width | At 0%, each pixel takes its winning site's Target color. Increasing the width blends competitive sites across color-space boundaries. This is not an image blur. |
 | Blend space | Mixes Target colors in Oklab or Linear RGB, independently of Matching. Available when Transition width is greater than zero. |
 
+These settings are grouped under **Color mapping**, collapsed by default to leave
+more room for Color sites. Expand the group to edit them; point to a control for
+its explanation.
+
 Blending can produce more output colors than the number of Target swatches.
 Hard transitions are useful for strict palette reduction; wider transitions are
 useful for smooth recoloring. Smoothing is measured in preview pixels for the
@@ -119,15 +123,19 @@ discard subtle color information; others use smoothing and soft transitions.
 Print-inspired names describe the palette and reduction style, not simulated
 paper texture, halftones, or physical ink behavior.
 
-Choosing a preset applies it immediately. Use Undo to return to your previous
-settings. **Save Preset...** stores your current processing settings for reuse;
-it does not include source artwork or image-marker positions. Built-ins are not
-overwritten when you save a personal preset.
+Choose **Presets → Select Preset...** to browse built-in and personal looks.
+Select a look and choose **Apply** to replace the processing settings; Cancel
+leaves the current settings unchanged. The change is one undoable edit. Choose
+**Presets → Load Preset...** to apply a current `.chromiator` project's
+processing recipe or a current preset `.json` file without replacing the open
+artwork or project. **Presets → Save Preset...** stores the current processing
+settings for reuse; it does not include source artwork or image-marker
+positions. Built-ins are not overwritten when you save a personal preset.
 
 Personal presets live in `$XDG_DATA_HOME/chromiator/presets`, normally
-`~/.local/share/chromiator/presets`. Use **Open personal preset folder** to find
-them and **Refresh personal presets** after making changes outside the app.
-The app reports invalid preset files without preventing valid presets from loading.
+`~/.local/share/chromiator/presets`. The Select Preset dialog can open the
+personal preset folder or refresh its list after external changes. The app
+reports invalid preset files without preventing valid presets from loading.
 
 ## Projects and export
 
