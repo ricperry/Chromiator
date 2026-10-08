@@ -1,0 +1,130 @@
+{
+  "version": 3,
+  "name": "Blueprint",
+  "description": "Architectural navy, cyan linework, and pale highlights",
+  "processing": {
+    "preprocessing": {
+      "input_smoothing": 0.0
+    },
+    "voronoi": {
+      "sites": [
+        {
+          "id": 1,
+          "order": 1,
+          "source_color": [
+            0.001821162,
+            0.0033465358,
+            0.006048833,
+            1.0
+          ],
+          "target_color": [
+            0.001821162,
+            0.009721218,
+            0.027320892
+          ],
+          "influence": 0.2,
+          "locked": false,
+          "position": null,
+          "size": "Point"
+        },
+        {
+          "id": 2,
+          "order": 2,
+          "source_color": [
+            0.019382361,
+            0.04231141,
+            0.08021982,
+            1.0
+          ],
+          "target_color": [
+            0.004024717,
+            0.04373503,
+            0.13286832
+          ],
+          "influence": 0.0,
+          "locked": false,
+          "position": null,
+          "size": "Point"
+        },
+        {
+          "id": 3,
+          "order": 3,
+          "source_color": [
+            0.13286832,
+            0.2663556,
+            0.3515326,
+            1.0
+          ],
+          "target_color": [
+            0.022173885,
+            0.26225066,
+            0.462077
+          ],
+          "influence": 0.0,
+          "locked": false,
+          "position": null,
+          "size": "Point"
+        },
+        {
+          "id": 4,
+          "order": 4,
+          "source_color": [
+            0.55201143,
+            0.6866853,
+            0.73046076,
+            1.0
+          ],
+          "target_color": [
+            0.39157248,
+            0.7605245,
+            0.91309863
+          ],
+          "influence": 0.0,
+          "locked": false,
+          "position": null,
+          "size": "Point"
+        },
+        {
+          "id": 5,
+          "order": 5,
+          "source_color": [
+            0.92158186,
+            0.9559733,
+            0.9559733,
+            1.0
+          ],
+          "target_color": [
+            0.82278574,
+            0.9646863,
+            1.0
+          ],
+          "influence": 0.0,
+          "locked": false,
+          "position": null,
+          "size": "Point"
+        }
+      ],
+      "next_site_id": 6,
+      "matching": "Perceptual",
+      "transition": {
+        "start": 0.5,
+        "midpoint": 0.5,
+        "end": 0.5
+      }
+    },
+    "steps": [
+      {
+        "working_space": "Oklch",
+        "components": "Hue",
+        "operation": {
+          "RotateHue": {
+            "degrees": 0.0
+          }
+        },
+        "pass_through": "PreserveUnselectedComponents",
+        "alpha": "PassThroughStraight",
+        "conversion_back": "KeepLinearSrgbF32"
+      }
+    ]
+  }
+}

@@ -1,0 +1,92 @@
+{
+  "version": 3,
+  "name": "Two-Color Press",
+  "description": "Black and red spot ink on paper for broad graphic regions",
+  "processing": {
+    "preprocessing": {
+      "input_smoothing": 0.0
+    },
+    "voronoi": {
+      "sites": [
+        {
+          "id": 1,
+          "order": 1,
+          "source_color": [
+            0.022173885,
+            0.023153367,
+            0.029556835,
+            1.0
+          ],
+          "target_color": [
+            0.014443844,
+            0.014443844,
+            0.015996294
+          ],
+          "influence": 0.05,
+          "locked": false,
+          "position": null,
+          "size": "Point"
+        },
+        {
+          "id": 2,
+          "order": 2,
+          "source_color": [
+            0.7379104,
+            0.7230551,
+            0.6172066,
+            1.0
+          ],
+          "target_color": [
+            0.91309863,
+            0.838799,
+            0.69387174
+          ],
+          "influence": 0.0,
+          "locked": false,
+          "position": null,
+          "size": "Point"
+        },
+        {
+          "id": 3,
+          "order": 3,
+          "source_color": [
+            0.4677838,
+            0.08228271,
+            0.05612849,
+            1.0
+          ],
+          "target_color": [
+            0.69387174,
+            0.03688945,
+            0.031896032
+          ],
+          "influence": 0.1,
+          "locked": false,
+          "position": null,
+          "size": "Point"
+        }
+      ],
+      "next_site_id": 4,
+      "matching": "Perceptual",
+      "transition": {
+        "start": 0.5,
+        "midpoint": 0.5,
+        "end": 0.5
+      }
+    },
+    "steps": [
+      {
+        "working_space": "Oklch",
+        "components": "Hue",
+        "operation": {
+          "RotateHue": {
+            "degrees": 0.0
+          }
+        },
+        "pass_through": "PreserveUnselectedComponents",
+        "alpha": "PassThroughStraight",
+        "conversion_back": "KeepLinearSrgbF32"
+      }
+    ]
+  }
+}

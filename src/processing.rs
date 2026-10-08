@@ -1,11 +1,16 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::color::{encoded_to_hsv, linear_to_okhsl_cylinder};
-use crate::document::{ComponentOperation, ComponentSet, PixelImage, Recipe, VoronoiMatching};
+use crate::document::{
+    ComponentOperation, ComponentSet, MAX_INPUT_SMOOTHING_SIGMA, PixelImage, Recipe,
+    VoronoiMatching,
+};
 use crate::voronoi::{distance2, linear_rgb_to_oklab};
 use crate::transitions::{BlendScratch, CompiledBlend};
 
 pub const PREVIEW_MAX_DIMENSION: u32 = 1600;
+const BOX_BLUR_ONLY_SIGMA: f32 = 12.0;
+const FIR_TRANSITION_RADIUS: i32 = 30; // The established 3σ support at the legacy 10px ceiling.
 
 #[derive(Clone, Debug)]
 pub struct DisplayBuffer {
@@ -56,11 +61,9 @@ pub fn process_cancellable_with_progress_and_coverage(
         .expect("cannot process an invalid Voronoi recipe")?;
     let mut blend_scratch = BlendScratch::new(if compiled.blend.is_some() { compiled.sites.len() } else { 0 });
     let smoothing = recipe.preprocessing.input_smoothing;
-    let smoothing_rows = usize::from(smoothing > 0.0) * 2;
+    let smoothing_rows = blur_work_units(source, smoothing);
     let active_steps = recipe.steps.len();
-    let method_rows = 1usize;
-    let total_rows =
-        ((active_steps + method_rows + smoothing_rows).max(1) * source.height as usize) as f64;
+    let total_rows = ((active_steps + 1) * source.height as usize + smoothing_rows).max(1) as f64;
     let mut completed_rows = 0usize;
     let mut pixels = if smoothing > 0.0 {
         gaussian_blur_cancellable(source, smoothing, generation, current, |rows| {
@@ -135,6 +138,30 @@ pub fn process_cancellable_with_progress_and_coverage(
     ))
 }
 
+/// Process the authoritative full-resolution source, then publish a bounded result image.
+/// The preview therefore uses the same processing path and sigma units as export.
+pub fn process_preview_cancellable_with_progress_and_coverage(
+    source: &PixelImage,
+    recipe: &Recipe,
+    generation: u64,
+    current: &AtomicU64,
+    mut progress: impl FnMut(f64),
+) -> Option<(PixelImage, Coverage)> {
+    let (full_result, coverage) = process_cancellable_with_progress_and_coverage(
+        source,
+        recipe,
+        generation,
+        current,
+        |fraction| progress(fraction * 0.9),
+    )?;
+    let preview = bounded_preview_cancellable(&full_result, generation, current, |fraction| {
+        progress(0.9 + fraction * 0.1);
+    })?;
+    Some((preview, coverage))
+}
+
+/// Blur with σ in original source-image pixels, preserving legacy FIR output through σ=10.
+/// A short FIR/three-box crossfade avoids a step at the bounded-cost path transition.
 pub fn gaussian_blur_cancellable(
     source: &PixelImage,
     amount: f32,
@@ -145,8 +172,73 @@ pub fn gaussian_blur_cancellable(
     if amount <= 0.0 {
         return Some(source.clone());
     }
-    let sigma = amount.max(0.5);
-    let radius = (3.0 * sigma).ceil() as i32;
+    if !amount.is_finite() || amount > MAX_INPUT_SMOOTHING_SIGMA {
+        return None;
+    }
+    let sigma = amount;
+    if sigma >= BOX_BLUR_ONLY_SIGMA {
+        return gaussian_blur_boxes_cancellable(source, sigma, generation, current, &mut rows_done);
+    }
+    if sigma > 10.0 {
+        let exact = gaussian_blur_fir_with_radius_cancellable(
+            source,
+            sigma,
+            FIR_TRANSITION_RADIUS,
+            generation,
+            current,
+            &mut rows_done,
+        )?;
+        let boxes = gaussian_blur_boxes_cancellable(source, sigma, generation, current, &mut rows_done)?;
+        return blend_blur_results(
+            source.width,
+            source.height,
+            exact,
+            boxes,
+            (sigma - 10.0) / (BOX_BLUR_ONLY_SIGMA - 10.0),
+            generation,
+            current,
+            &mut rows_done,
+        );
+    }
+    if sigma < 0.5 {
+        return gaussian_blur_small_sigma_cancellable(
+            source,
+            sigma,
+            generation,
+            current,
+            &mut rows_done,
+        );
+    }
+
+    gaussian_blur_fir_cancellable(source, sigma, generation, current, &mut rows_done)
+}
+
+fn gaussian_blur_fir_cancellable(
+    source: &PixelImage,
+    sigma: f32,
+    generation: u64,
+    current: &AtomicU64,
+    rows_done: &mut impl FnMut(usize),
+) -> Option<PixelImage> {
+    gaussian_blur_fir_with_radius_cancellable(
+        source,
+        sigma,
+        (3.0 * sigma).ceil() as i32,
+        generation,
+        current,
+        rows_done,
+    )
+}
+
+fn gaussian_blur_fir_with_radius_cancellable(
+    source: &PixelImage,
+    sigma: f32,
+    radius: i32,
+    generation: u64,
+    current: &AtomicU64,
+    rows_done: &mut impl FnMut(usize),
+) -> Option<PixelImage> {
+    // Keep the established FIR kernel and accumulation order for the legacy range.
     let mut weights = (-radius..=radius)
         .map(|offset| (-(offset * offset) as f32 / (2.0 * sigma * sigma)).exp())
         .collect::<Vec<_>>();
@@ -204,6 +296,283 @@ pub fn gaussian_blur_cancellable(
         rows_done(1);
     }
     PixelImage::new(source.width, source.height, output).ok()
+}
+
+#[allow(clippy::too_many_arguments)]
+fn blend_blur_results(
+    width: u32,
+    height: u32,
+    exact: PixelImage,
+    boxes: PixelImage,
+    amount: f32,
+    generation: u64,
+    current: &AtomicU64,
+    rows_done: &mut impl FnMut(usize),
+) -> Option<PixelImage> {
+    let blend = f64::from(amount.clamp(0.0, 1.0));
+    let keep = 1.0 - blend;
+    let mut pixels = Vec::with_capacity(exact.pixels.len());
+    let width_usize = width as usize;
+    let height_usize = height as usize;
+    for y in 0..height_usize {
+        if current.load(Ordering::Acquire) != generation {
+            return None;
+        }
+        let row_start = y * width_usize;
+        for x in 0..width_usize {
+            if x % 4096 == 0 && current.load(Ordering::Acquire) != generation {
+                return None;
+            }
+            let index = row_start + x;
+            let exact = exact.pixels[index];
+            let boxes = boxes.pixels[index];
+            let alpha = f64::from(exact[3]) * keep + f64::from(boxes[3]) * blend;
+            let premul: [f64; 3] = std::array::from_fn(|channel| {
+                f64::from(exact[channel]) * f64::from(exact[3]) * keep
+                    + f64::from(boxes[channel]) * f64::from(boxes[3]) * blend
+            });
+            pixels.push(unpremultiply([premul[0], premul[1], premul[2], alpha]));
+        }
+        rows_done(1);
+    }
+    if current.load(Ordering::Acquire) != generation {
+        return None;
+    }
+    PixelImage::new(width, height, pixels).ok()
+}
+
+fn gaussian_blur_small_sigma_cancellable(
+    source: &PixelImage,
+    sigma: f32,
+    generation: u64,
+    current: &AtomicU64,
+    rows_done: &mut impl FnMut(usize),
+) -> Option<PixelImage> {
+    let radius = (3.0 * sigma).ceil() as i32;
+    let sigma64 = f64::from(sigma);
+    let mut weights = (-radius..=radius)
+        .map(|offset| {
+            let offset = f64::from(offset);
+            (-(offset * offset) / (2.0 * sigma64 * sigma64)).exp()
+        })
+        .collect::<Vec<_>>();
+    let sum: f64 = weights.iter().sum();
+    for weight in &mut weights {
+        *weight /= sum;
+    }
+    let width = source.width as usize;
+    let height = source.height as usize;
+    let mut horizontal = vec![[0.0; 4]; source.pixels.len()];
+    for y in 0..height {
+        if y % 4 == 0 && current.load(Ordering::Acquire) != generation {
+            return None;
+        }
+        for x in 0..width {
+            let mut premul = [0.0_f64; 4];
+            for (kernel, offset) in weights.iter().zip(-radius..=radius) {
+                let sx = (x as i64 + i64::from(offset)).clamp(0, width as i64 - 1) as usize;
+                let pixel = source.pixels[y * width + sx];
+                premul[0] += f64::from(pixel[0] * pixel[3]) * kernel;
+                premul[1] += f64::from(pixel[1] * pixel[3]) * kernel;
+                premul[2] += f64::from(pixel[2] * pixel[3]) * kernel;
+                premul[3] += f64::from(pixel[3]) * kernel;
+            }
+            horizontal[y * width + x] = premul.map(|channel| channel as f32);
+        }
+        rows_done(1);
+    }
+    let mut output = vec![[0.0; 4]; source.pixels.len()];
+    for y in 0..height {
+        if y % 4 == 0 && current.load(Ordering::Acquire) != generation {
+            return None;
+        }
+        for x in 0..width {
+            let mut premul = [0.0_f64; 4];
+            for (kernel, offset) in weights.iter().zip(-radius..=radius) {
+                let sy = (y as i64 + i64::from(offset)).clamp(0, height as i64 - 1) as usize;
+                let pixel = horizontal[sy * width + x];
+                for channel in 0..4 {
+                    premul[channel] += f64::from(pixel[channel]) * kernel;
+                }
+            }
+            output[y * width + x] = unpremultiply(premul);
+        }
+        rows_done(1);
+    }
+    PixelImage::new(source.width, source.height, output).ok()
+}
+
+fn gaussian_blur_boxes_cancellable(
+    source: &PixelImage,
+    sigma: f32,
+    generation: u64,
+    current: &AtomicU64,
+    rows_done: &mut impl FnMut(usize),
+) -> Option<PixelImage> {
+    let width = source.width as usize;
+    let height = source.height as usize;
+    if width == 0 || height == 0 {
+        return Some(source.clone());
+    }
+    let mut working = Vec::with_capacity(source.pixels.len());
+    for (index, pixel) in source.pixels.iter().enumerate() {
+        if index % 8192 == 0 && current.load(Ordering::Acquire) != generation {
+            return None;
+        }
+        working.push([pixel[0] * pixel[3], pixel[1] * pixel[3], pixel[2] * pixel[3], pixel[3]]);
+    }
+    let mut scratch = vec![[0.0; 4]; source.pixels.len()];
+    let radii = gaussian_box_radii(f64::from(sigma));
+    for (box_index, radius) in radii.into_iter().enumerate() {
+        if !box_pass_cancellable(
+            &working,
+            &mut scratch,
+            width,
+            height,
+            radius,
+            true,
+            false,
+            generation,
+            current,
+            rows_done,
+        ) {
+            return None;
+        }
+        if !box_pass_cancellable(
+            &scratch,
+            &mut working,
+            width,
+            height,
+            radius,
+            false,
+            box_index == 2,
+            generation,
+            current,
+            rows_done,
+        ) {
+            return None;
+        }
+    }
+    PixelImage::new(source.width, source.height, working).ok()
+}
+
+fn gaussian_box_radii(sigma: f64) -> [usize; 3] {
+    let ideal_width = (4.0 * sigma * sigma + 1.0).sqrt();
+    let mut lower_width = ideal_width.floor() as usize;
+    if lower_width.is_multiple_of(2) {
+        lower_width = lower_width.saturating_sub(1);
+    }
+    lower_width = lower_width.max(1);
+    let upper_width = lower_width + 2;
+    let lower = lower_width as f64;
+    let lower_count = ((12.0 * sigma * sigma - 3.0 * lower * lower - 12.0 * lower - 9.0)
+        / (-4.0 * lower - 4.0))
+        .round()
+        .clamp(0.0, 3.0) as usize;
+    std::array::from_fn(|index| {
+        let width = if index < lower_count { lower_width } else { upper_width };
+        (width - 1) / 2
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn box_pass_cancellable(
+    input: &[[f32; 4]],
+    output: &mut [[f32; 4]],
+    width: usize,
+    height: usize,
+    radius: usize,
+    horizontal: bool,
+    unpremultiply_output: bool,
+    generation: u64,
+    current: &AtomicU64,
+    rows_done: &mut impl FnMut(usize),
+) -> bool {
+    let line_count = if horizontal { height } else { width };
+    let line_len = if horizontal { width } else { height };
+    let radius_i64 = radius as i64;
+    let divisor = (radius.saturating_mul(2).saturating_add(1)) as f64;
+    let inv_divisor = 1.0 / divisor;
+    for line in 0..line_count {
+        if current.load(Ordering::Acquire) != generation {
+            return false;
+        }
+        let at = |position: usize| {
+            if horizontal {
+                line * width + position
+            } else {
+                position * width + line
+            }
+        };
+        let mut sum = [0.0_f64; 4];
+        let edge_count = radius.saturating_add(1) as f64;
+        for channel in 0..4 {
+            sum[channel] = f64::from(input[at(0)][channel]) * edge_count;
+        }
+        let unique_right = radius.min(line_len - 1);
+        for position in 1..=unique_right {
+            let pixel = input[at(position)];
+            for channel in 0..4 {
+                sum[channel] += f64::from(pixel[channel]);
+            }
+        }
+        if radius >= line_len - 1 {
+            let replicated = (radius - (line_len - 1)) as f64;
+            let pixel = input[at(line_len - 1)];
+            for channel in 0..4 {
+                sum[channel] += f64::from(pixel[channel]) * replicated;
+            }
+        }
+        for position in 0..line_len {
+            if position % 4096 == 0 && current.load(Ordering::Acquire) != generation {
+                return false;
+            }
+            let average = sum.map(|value| (value * inv_divisor) as f32);
+            output[at(position)] = if unpremultiply_output {
+                unpremultiply(average.map(f64::from))
+            } else {
+                average
+            };
+            if position + 1 < line_len {
+                let leaving = (position as i64 - radius_i64).clamp(0, line_len as i64 - 1) as usize;
+                let entering = (position as i64 + radius_i64 + 1).clamp(0, line_len as i64 - 1) as usize;
+                let left = input[at(leaving)];
+                let right = input[at(entering)];
+                for channel in 0..4 {
+                    sum[channel] += f64::from(right[channel]) - f64::from(left[channel]);
+                }
+            }
+        }
+        rows_done(1);
+    }
+    true
+}
+
+fn unpremultiply(premul: [f64; 4]) -> [f32; 4] {
+    let alpha = premul[3].clamp(0.0, 1.0);
+    if alpha > 1.0e-8 {
+        [
+            (premul[0] / alpha) as f32,
+            (premul[1] / alpha) as f32,
+            (premul[2] / alpha) as f32,
+            alpha as f32,
+        ]
+    } else {
+        [0.0, 0.0, 0.0, 0.0]
+    }
+}
+
+fn blur_work_units(source: &PixelImage, sigma: f32) -> usize {
+    if sigma <= 0.0 {
+        0
+    } else if sigma >= BOX_BLUR_ONLY_SIGMA {
+        3 * (source.width as usize + source.height as usize)
+    } else if sigma > 10.0 {
+        3 * source.height as usize
+            + 3 * (source.width as usize + source.height as usize)
+    } else {
+        2 * source.height as usize
+    }
 }
 
 /// Source and output context retained for the winning site and future boundary resolution.
@@ -389,15 +758,32 @@ fn hsv_cone_point(hsv: [f64; 3]) -> [f64; 3] {
 
 /// Create a bounded linear-f32 preview. Full-resolution authoritative pixels remain untouched.
 pub fn bounded_preview(source: &PixelImage) -> PixelImage {
+    bounded_preview_cancellable(source, 0, &AtomicU64::new(0), |_| {})
+        .expect("fixed generation")
+}
+
+fn bounded_preview_cancellable(
+    source: &PixelImage,
+    generation: u64,
+    current: &AtomicU64,
+    mut progress: impl FnMut(f64),
+) -> Option<PixelImage> {
     let largest = source.width.max(source.height);
     if largest <= PREVIEW_MAX_DIMENSION {
-        return source.clone();
+        if current.load(Ordering::Acquire) != generation {
+            return None;
+        }
+        progress(1.0);
+        return Some(source.clone());
     }
     let scale = PREVIEW_MAX_DIMENSION as f64 / largest as f64;
     let width = (source.width as f64 * scale).round().max(1.0) as u32;
     let height = (source.height as f64 * scale).round().max(1.0) as u32;
     let mut pixels = Vec::with_capacity(width as usize * height as usize);
     for y in 0..height {
+        if current.load(Ordering::Acquire) != generation {
+            return None;
+        }
         let sy = ((y as u64 * source.height as u64) / height as u64).min(source.height as u64 - 1)
             as usize;
         for x in 0..width {
@@ -405,8 +791,9 @@ pub fn bounded_preview(source: &PixelImage) -> PixelImage {
                 as usize;
             pixels.push(source.pixels[sy * source.width as usize + sx]);
         }
+        progress((y + 1) as f64 / height as f64);
     }
-    PixelImage::new(width, height, pixels).expect("preview dimensions match")
+    PixelImage::new(width, height, pixels).ok()
 }
 
 /// Rotates one linear-sRGB color in OKLCh using the persisted f32 operation kernel.

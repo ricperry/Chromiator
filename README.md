@@ -1,9 +1,14 @@
 # Chromiator
 
-**Linux downloads:** [Chromiator 0.2.0 preview](https://github.com/ricperry/Chromiator/releases/tag/v0.2.0)
-provides x86_64 AppImage and Flatpak packages, source, license notices, and
-checksums. This is a pre-alpha release; see the release notes for installation
-instructions and compatibility limits.
+**Linux downloads:** [Chromiator 0.3.0 preview — publication pending](https://github.com/ricperry/Chromiator/releases/tag/v0.3.0).
+The pre-alpha release is being prepared with x86_64 AppImage and Flatpak
+packages, source, license notices, and checksums. See the [release notes](docs/RELEASE_0.3.0.md)
+for what's new and compatibility limits.
+
+The 0.3.0 packages are not available until their final build and runtime checks
+are complete. The [0.2.0 preview](https://github.com/ricperry/Chromiator/releases/tag/v0.2.0)
+remains the latest published release in the meantime; see
+[distribution details](docs/DISTRIBUTION.md) for package evidence.
 
 Chromiator is an artist-directed perceptual color-space partitioning and remapping
 application for Linux. It uses editable Voronoi sites in color space to simplify,
@@ -58,11 +63,20 @@ chromiator --open /path/to/project.chromiator
 4. Adjust Matching, Influence, and Transition width to control the result.
 5. Compare Source and Result, save a project to keep editing, or export an image.
 
+A new image starts with up to six sites chosen from its visible colors. Nearby
+dominant shades share a site, while compact, distinct highlights and accents can
+keep their own. Each site attaches to a real source pixel, and its Target starts
+at that sampled color. Transparent pixels and isolated single-pixel noise do not
+add sites on normal-sized images.
+
 ## Canvas and color sites
 
 **Source** displays the original image. **Result** displays the processed image.
 **Split** displays Result on the left and Source on the right; drag the divider
 to reveal either side. Hide the adjustments panel when you want more canvas space.
+With adjustments hidden, Save, Undo, and Redo move into the Document menu so the
+window can shrink to its 600 px compact minimum; showing the panel restores the
+toolbar controls and the wider workspace minimum.
 
 Click visible artwork to create a site from that color. A Source sample attaches
 to the original image; a Result sample uses the processed color and is detached.
@@ -93,15 +107,20 @@ leaves the original value alone.
 | Setting | What it does |
 | --- | --- |
 | Matching | Chooses the color-distance model for assigning pixels to sites. Perceptual (OKLab) is a useful starting point; RGB and HSV produce different partitions. |
-| Smoothing | Smooths the input before color mapping. Zero preserves fine detail; higher values favor broader structures. |
+| Smoothing σ (source px) | Smooths the input before color mapping. Zero preserves fine detail; higher values favor broader structures. Values run from 0 to 10,000 source pixels; above 10, a fast Gaussian approximation is blended in. |
 | Transition width | At 0%, each pixel takes its winning site's Target color. Increasing the width blends competitive sites across color-space boundaries. This is not an image blur. |
 | Blend space | Mixes Target colors in Oklab or Linear RGB, independently of Matching. Available when Transition width is greater than zero. |
 
+These settings are grouped under **Color mapping**, collapsed by default to leave
+more room for Color sites. Expand the group to edit them; point to a control for
+its explanation.
+
 Blending can produce more output colors than the number of Target swatches.
 Hard transitions are useful for strict palette reduction; wider transitions are
-useful for smooth recoloring. Smoothing is measured in preview pixels for the
-preview and source pixels for export, so fine smoothed details can differ at
-different resolutions.
+useful for smooth recoloring. Smoothing σ is measured in original source-image
+pixels. Both the initial and scheduled previews process the full source before
+the result is reduced to fit the 1600-pixel preview limit. A PNG8 export reduced
+with the same sampling therefore matches the preview's displayed pixels.
 
 ## Presets
 
@@ -119,15 +138,19 @@ discard subtle color information; others use smoothing and soft transitions.
 Print-inspired names describe the palette and reduction style, not simulated
 paper texture, halftones, or physical ink behavior.
 
-Choosing a preset applies it immediately. Use Undo to return to your previous
-settings. **Save Preset...** stores your current processing settings for reuse;
-it does not include source artwork or image-marker positions. Built-ins are not
-overwritten when you save a personal preset.
+Choose **Presets → Select Preset...** to browse built-in and personal looks.
+Select a look and choose **Apply** to replace the processing settings; Cancel
+leaves the current settings unchanged. The change is one undoable edit. Choose
+**Presets → Load Preset...** to apply a current `.chromiator` project's
+processing recipe or a current preset `.json` file without replacing the open
+artwork or project. **Presets → Save Preset...** stores the current processing
+settings for reuse; it does not include source artwork or image-marker
+positions. Built-ins are not overwritten when you save a personal preset.
 
 Personal presets live in `$XDG_DATA_HOME/chromiator/presets`, normally
-`~/.local/share/chromiator/presets`. Use **Open personal preset folder** to find
-them and **Refresh personal presets** after making changes outside the app.
-The app reports invalid preset files without preventing valid presets from loading.
+`~/.local/share/chromiator/presets`. The Select Preset dialog can open the
+personal preset folder or refresh its list after external changes. The app
+reports invalid preset files without preventing valid presets from loading.
 
 ## Projects and export
 

@@ -66,9 +66,9 @@ fn schedule_voronoi(ui: &Ui, state: &Rc<RefCell<State>>, message: &str) {
     };
     let dirty = document.dirty;
     let recipe = document.recipe.clone();
-    if let Some(source) = state.preview_source.clone() {
-        state.scheduler.schedule(source, recipe);
-    }
+    state
+        .scheduler
+        .schedule(document.source.clone(), recipe);
     drop(state);
     ui.save.set_sensitive(dirty);
     ui.status.set_label(message);

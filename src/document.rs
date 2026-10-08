@@ -39,14 +39,21 @@ pub struct Recipe {
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Preprocessing {
-    /// Gaussian blur sigma in evaluation-input pixels. Zero disables smoothing.
+    /// Gaussian blur sigma in original source-image pixels. Zero disables smoothing.
     pub input_smoothing: f32,
 }
 
+/// Maximum accepted Gaussian sigma, measured in original source-image pixels.
+pub const MAX_INPUT_SMOOTHING_SIGMA: f32 = 10_000.0;
+
 impl Preprocessing {
     pub fn validate(&self) -> Result<(), String> {
-        if !self.input_smoothing.is_finite() || !(0.0..=10.0).contains(&self.input_smoothing) {
-            return Err("Smooth source must be a finite value from 0 to 10".into());
+        if !self.input_smoothing.is_finite()
+            || !(0.0..=MAX_INPUT_SMOOTHING_SIGMA).contains(&self.input_smoothing)
+        {
+            return Err(format!(
+                "Smooth source sigma must be a finite value from 0 to {MAX_INPUT_SMOOTHING_SIGMA:.0} source pixels"
+            ));
         }
         Ok(())
     }

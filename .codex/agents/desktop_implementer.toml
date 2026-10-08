@@ -1,7 +1,5 @@
 name = "desktop_implementer"
-description = "Bounded native GTK/Voronoi implementation and focused verification under Astra."
-model = "gpt-5.6-sol"
-model_reasoning_effort = "high"
+description = "Bounded native GTK/Voronoi implementation and focused verification."
 sandbox_mode = "workspace-write"
 developer_instructions = """
 Implement the parent's settled task using only assigned paths. You are not alone in the codebase: preserve other edits and user-owned artifacts. One writer includes the parent; do not write alongside another writer or delegate. Inspect relevant code, callers, tests and current Git state before editing. Keep recipe/document authority separate from GTK and worker snapshots; preserve undo, savepoints, source sampling, floating-point processing, cancellation, atomic saves and latest-result previews.

@@ -13,6 +13,8 @@ import threading
 import time
 from typing import Iterator
 
+from atspi_protocol import Accessible as SnapshotAccessible, private_bus
+
 try:
     import pyatspi
 except ImportError as error:
@@ -123,11 +125,8 @@ def safe_states(node) -> dict[str, bool]:
             "selected": state.contains(pyatspi.STATE_SELECTED),
             "expanded": state.contains(pyatspi.STATE_EXPANDED),
         }
-    except Exception:
-        return {
-            key: False
-            for key in ("enabled", "focused", "checked", "pressed", "selected", "expanded")
-        }
+    except Exception as error:
+        raise RuntimeError("AT-SPI state is unavailable for this accessible") from error
 
 
 def safe_relations(node) -> dict[str, list[str]]:
@@ -197,9 +196,12 @@ def record_node(node, path: str) -> NodeRecord:
     )
 
 
-def walk(node, path: str, depth: int = 0, max_depth: int = 30) -> Iterator[tuple[object, NodeRecord, int]]:
-    """Traverse a bounded subtree with semantic paths and stale-node tolerance."""
-    record = record_node(node, path)
+def walk(node, path: str, depth: int = 0, max_depth: int = 30,
+         _record: NodeRecord | None = None) -> Iterator[tuple[object, NodeRecord, int]]:
+    """Traverse live nodes once each, with semantic paths and stale-node tolerance."""
+    if _record is None and is_defunct(node):
+        return
+    record = _record or record_node(node, path)
     yield node, record, depth
     if depth >= max_depth:
         return
@@ -211,9 +213,12 @@ def walk(node, path: str, depth: int = 0, max_depth: int = 30) -> Iterator[tuple
         try:
             child = node.getChildAtIndex(index)
             if child is not None:
+                if is_defunct(child):
+                    continue
                 child_record = record_node(child, "")
                 segment = f"{child_record.role}:{child_record.name or '<unnamed>'}[{index}]"
-                yield from walk(child, f"{path}/{segment}", depth + 1, max_depth)
+                child_record.path = f"{path}/{segment}"
+                yield from walk(child, child_record.path, depth + 1, max_depth, child_record)
         except Exception:
             continue
 
@@ -226,6 +231,7 @@ def application_roots(application_query: str | None) -> list[object]:
     query = application_query.casefold()
     roots = []
     registry_ids = set()
+    connection = None
     for index in range(root.childCount):
         try:
             candidate = root.getChildAtIndex(index)
@@ -244,7 +250,9 @@ def application_roots(application_query: str | None) -> list[object]:
                 if registry_id in registry_ids:
                     continue
                 registry_ids.add(registry_id)
-            roots.append(candidate)
+            if connection is None:
+                connection = private_bus()
+            roots.append(SnapshotAccessible(connection, candidate.app.bus_name, candidate.path))
         except Exception:
             continue
     return roots
@@ -285,6 +293,14 @@ def semantic_record_key(record: NodeRecord, node=None) -> tuple[str, str, str, s
         except Exception:
             pass
     return "record", record.role, record.name, record.path
+
+
+def same_accessible(first, second) -> bool:
+    """Compare native focus-event proxies with public-protocol traversal nodes."""
+    try:
+        return (str(first.app.bus_name), str(first.path)) == (str(second.app.bus_name), str(second.path))
+    except Exception:
+        return first == second
 
 
 def is_accessibility_control(record: NodeRecord) -> bool:
@@ -390,10 +406,11 @@ def invoke(node, requested: str | None = None) -> None:
 
 
 def emit_change(node, before: NodeRecord, after_node=None) -> int:
-    """Emit before/after JSON after a real-widget operation and short GTK update turn."""
+    """Read back only a still-live action target after a GTK update turn."""
     time.sleep(0.05)
     current = after_node or node
-    print(json.dumps({"before": asdict(before), "after": asdict(record_node(current, before.path))}, indent=2, sort_keys=True))
+    after = None if is_defunct(current) else asdict(record_node(current, before.path))
+    print(json.dumps({"before": asdict(before), "after": after}, indent=2, sort_keys=True))
     return 0
 
 
@@ -506,13 +523,13 @@ def selector_option_matches(selector, option_name: str, max_depth: int) -> list[
 def focus_event_record(source, target, target_record: NodeRecord) -> NodeRecord | None:
     """Accept one focused event only when its source is the target or a real descendant."""
     try:
-        if source == target:
+        if same_accessible(source, target):
             return record_node(source, target_record.path)
     except Exception:
         return None
     for candidate, record, _depth in walk(target, target_record.path, max_depth=6):
         try:
-            if source == candidate:
+            if same_accessible(source, candidate):
                 return record_node(source, record.path)
         except Exception:
             continue

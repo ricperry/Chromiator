@@ -1,9 +1,11 @@
 # Chromiator project guidance
 
 Use `.agents/skills/chromiator-orchestrator/SKILL.md` for project engineering
-and orchestration. The intended parent is `gpt-6-astra` with `high` reasoning.
-The parent may work directly; delegate only independent work or useful review.
-Keep one writer at a time, including the parent.
+and orchestration. The selected global profile controls the parent; the
+project supplies a ROUTINE child default. Delegate substantive implementation
+to the matching specialist even when one child can own the full task. Keep
+only tiny incidental edits local to the parent, with one writer and the
+existing stage and acceptance gates.
 
 ## Product direction
 

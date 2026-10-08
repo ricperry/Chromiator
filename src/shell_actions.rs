@@ -36,6 +36,66 @@ pub(super) fn replacement_handler(
     button.connect_clicked(move |_| request_replacement(replacement, &ui, &state));
 }
 
+fn preset_load_filter() -> gtk::FileFilter {
+    let filter = gtk::FileFilter::new();
+    filter.set_name(Some("Chromiator projects and presets"));
+    filter.add_suffix("chromiator");
+    filter.add_suffix("json");
+    filter
+}
+
+pub(super) fn load_preset_dialog(ui: &Rc<Ui>, state: &Rc<RefCell<State>>) {
+    if !preset_actions_allowed(ui, state) {
+        return;
+    }
+    let filter = preset_load_filter();
+    let filters = gio::ListStore::new::<gtk::FileFilter>();
+    filters.append(&filter);
+    let dialog = gtk::FileDialog::builder()
+        .title("Load Preset")
+        .filters(&filters)
+        .default_filter(&filter)
+        .build();
+    let window = ui.window.clone();
+    let ui = ui.clone();
+    let state = state.clone();
+    set_preset_dialog_open(&ui, &state, true);
+    glib::spawn_future_local(async move {
+        let path = dialog
+            .open_future(Some(&window))
+            .await
+            .ok()
+            .and_then(|file| file.path());
+        set_preset_dialog_open(&ui, &state, false);
+        if let Some(path) = path {
+            start_preset_load(&ui, &state, path);
+        }
+    });
+}
+
+fn start_preset_load(ui: &Rc<Ui>, state: &Rc<RefCell<State>>, path: PathBuf) {
+    let Some((sender, token)) = begin_job(ui, state, "Reading preset file…") else {
+        return;
+    };
+    thread::spawn(move || {
+        let generation = token.generation();
+        let _ = sender.send(Work::Progress(
+            generation,
+            0.1,
+            "Validating preset file…",
+        ));
+        let result = Preset::load_from_file(&path).and_then(|preset| {
+            if token.is_current() {
+                Ok(preset)
+            } else {
+                anyhow::bail!("preset load cancelled")
+            }
+        })
+        .map_err(|error| format!("{error:#}"));
+        let _ = sender.send(Work::PresetLoaded(generation, Box::new(result)));
+    });
+}
+
 fn request_replacement(replacement: Replacement, ui: &Rc<Ui>, state: &Rc<RefCell<State>>) {
     let dirty = state
         .borrow()
@@ -70,44 +130,60 @@ fn request_replacement(replacement: Replacement, ui: &Rc<Ui>, state: &Rc<RefCell
 
 fn execute_replacement(replacement: Replacement, ui: &Rc<Ui>, state: &Rc<RefCell<State>>) {
     match replacement {
-        Replacement::OpenImage => present_open_dialog(ui, state, OpenKind::Image),
-        Replacement::OpenProject => present_open_dialog(ui, state, OpenKind::Project),
+        Replacement::OpenImage => present_open_dialog(ui, state, OpenIntent::Image),
+        Replacement::OpenImageOrProject => {
+            present_open_dialog(ui, state, OpenIntent::ImageOrProject)
+        }
+        Replacement::OpenProject => present_open_dialog(ui, state, OpenIntent::Project),
         Replacement::Example => start_example_open(ui, state),
     }
 }
 
-fn open_filter(kind: OpenKind) -> gtk::FileFilter {
+fn add_supported_raster_types(filter: &gtk::FileFilter) {
+    for suffix in ["png", "jpg", "jpeg", "tif", "tiff", "webp", "bmp", "gif"] {
+        filter.add_suffix(suffix);
+    }
+    for mime in [
+        "image/png",
+        "image/jpeg",
+        "image/tiff",
+        "image/webp",
+        "image/bmp",
+        "image/gif",
+    ] {
+        filter.add_mime_type(mime);
+    }
+}
+
+fn open_filter(intent: OpenIntent) -> gtk::FileFilter {
     let filter = gtk::FileFilter::new();
-    match kind {
-        OpenKind::Image => {
+    match intent {
+        OpenIntent::Image => {
             filter.set_name(Some("Supported raster images"));
-            for mime in [
-                "image/png",
-                "image/jpeg",
-                "image/tiff",
-                "image/webp",
-                "image/bmp",
-                "image/gif",
-            ] {
-                filter.add_mime_type(mime);
-            }
+            add_supported_raster_types(&filter);
         }
-        OpenKind::Project => {
+        OpenIntent::Project => {
             filter.set_name(Some("Chromiator projects"));
+            filter.add_suffix("chromiator");
+        }
+        OpenIntent::ImageOrProject => {
+            filter.set_name(Some("Supported raster images and Chromiator projects"));
+            add_supported_raster_types(&filter);
             filter.add_suffix("chromiator");
         }
     }
     filter
 }
 
-fn present_open_dialog(ui: &Rc<Ui>, state: &Rc<RefCell<State>>, kind: OpenKind) {
-    let filter = open_filter(kind);
+fn present_open_dialog(ui: &Rc<Ui>, state: &Rc<RefCell<State>>, intent: OpenIntent) {
+    let filter = open_filter(intent);
     let filters = gio::ListStore::new::<gtk::FileFilter>();
     filters.append(&filter);
     let dialog = gtk::FileDialog::builder()
-        .title(match kind {
-            OpenKind::Image => "Open Image",
-            OpenKind::Project => "Open Chromiator Project",
+        .title(match intent {
+            OpenIntent::Image => "Open Image",
+            OpenIntent::Project => "Open Chromiator Project",
+            OpenIntent::ImageOrProject => "Open Image or Project",
         })
         .filters(&filters)
         .default_filter(&filter)
@@ -130,14 +206,15 @@ fn present_open_dialog(ui: &Rc<Ui>, state: &Rc<RefCell<State>>, kind: OpenKind) 
             .ok()
             .and_then(|file| file.path())
         {
-            start_path_open(&ui, &state, path, kind);
+            start_path_open(&ui, &state, path, intent);
         } else {
             finish_job_controls(&ui, &state);
         }
     });
 }
 
-fn start_path_open(ui: &Rc<Ui>, state: &Rc<RefCell<State>>, path: PathBuf, kind: OpenKind) {
+fn start_path_open(ui: &Rc<Ui>, state: &Rc<RefCell<State>>, path: PathBuf, intent: OpenIntent) {
+    let kind = intent.selected_kind(&path);
     let document_kind = match kind {
         OpenKind::Image => DocumentKind::Image,
         OpenKind::Project => DocumentKind::Project,
@@ -187,7 +264,7 @@ pub(super) fn open_recent_project(ui: &Rc<Ui>, state: &Rc<RefCell<State>>, path:
     if !ui.empty_project.is_sensitive() || state.borrow().session.document().is_some() {
         return;
     }
-    start_path_open(ui, state, path, OpenKind::Project);
+    start_path_open(ui, state, path, OpenIntent::Project);
 }
 
 pub(super) fn start_example_open(ui: &Rc<Ui>, state: &Rc<RefCell<State>>) {
@@ -250,7 +327,7 @@ pub(super) fn save_handler(
         let dialog = gtk::FileDialog::builder()
             .title("Save Project As")
             .initial_name("Untitled.chromiator")
-            .default_filter(&open_filter(OpenKind::Project))
+            .default_filter(&open_filter(OpenIntent::Project))
             .build();
         let win = ui.window.clone();
         let s = state.clone();
@@ -372,6 +449,7 @@ pub(super) fn poll(ui: &Rc<Ui>, state: Rc<RefCell<State>>) {
                             path,
                             document_kind,
                             preview_source,
+                            result,
                             source_display,
                             result_display,
                             coverage,
@@ -405,7 +483,7 @@ pub(super) fn poll(ui: &Rc<Ui>, state: Rc<RefCell<State>>) {
                             let mut s = state.borrow_mut();
                             s.source_pixbuf = Some(pixbuf(source_display));
                             s.result_pixbuf = Some(pixbuf(result_display));
-                            s.result = None;
+                            s.result = Some(result);
                             s.preview_source = Some(preview_source);
                             s.coverage = coverage;
                             if let Err(error) = s.session.load(d) {
@@ -495,6 +573,21 @@ pub(super) fn poll(ui: &Rc<Ui>, state: Rc<RefCell<State>>) {
                         }
                     }
                 }
+                Work::PresetLoaded(generation, result) => {
+                    let current = state.borrow().jobs.is_current(generation);
+                    if !state.borrow_mut().jobs.acknowledge(generation) {
+                        continue;
+                    }
+                    finish_job(&ui, &state);
+                    if !current {
+                        ui.status.set_label("Cancelled");
+                        continue;
+                    }
+                    match *result {
+                        Ok(preset) => super::apply_loaded_preset(&ui, &state, preset),
+                        Err(error) => self::error(&ui, "Could not load preset", &error),
+                    }
+                }
                 Work::Save(generation, result) => {
                     let current = state.borrow().jobs.is_current(generation);
                     if !state.borrow_mut().jobs.acknowledge(generation) {
@@ -561,21 +654,102 @@ pub(super) fn poll(ui: &Rc<Ui>, state: Rc<RefCell<State>>) {
 }
 
 #[cfg(test)]
-mod project_filter_tests {
+mod tests {
     use super::*;
+
+    fn file_info(name: &str) -> gio::FileInfo {
+        let info = gio::FileInfo::new();
+        info.set_display_name(name);
+        let suffix = name
+            .rsplit_once('.')
+            .map(|(_, suffix)| suffix.to_ascii_lowercase());
+        let mime = match suffix.as_deref() {
+            Some("png") => "image/png",
+            Some("jpg" | "jpeg") => "image/jpeg",
+            Some("tif" | "tiff") => "image/tiff",
+            Some("webp") => "image/webp",
+            Some("bmp") => "image/bmp",
+            Some("gif") => "image/gif",
+            Some("svg") => "image/svg+xml",
+            _ => "application/octet-stream",
+        };
+        info.set_content_type(mime);
+        info
+    }
 
     /// Exercises GTK's chooser filter rather than a duplicate extension predicate.
     #[test]
     #[ignore = "requires a display; run in the private Sway session"]
     fn project_filter_accepts_chromiator_files() {
         gtk::init().expect("GTK display required for file-filter regression");
-        let filter = open_filter(OpenKind::Project);
+        let filter = open_filter(OpenIntent::Project);
         for (name, expected) in [
             ("Artwork.chromiator", true),
             ("Artwork.CHROMIATOR", true),
             ("Artwork.ChRoMiAtOr", true),
             ("Artwork.threshiator", false),
             ("Artwork.chromiator.bak", false),
+            ("Artwork.png", false),
+        ] {
+            let info = file_info(name);
+            assert_eq!(filter.match_(&info), expected, "chooser filter: {name}");
+        }
+    }
+
+    #[test]
+    #[ignore = "requires a display; run in the private Sway session"]
+    fn image_only_filter_accepts_supported_rasters_without_projects() {
+        gtk::init().expect("GTK display required for file-filter regression");
+        let filter = open_filter(OpenIntent::Image);
+        for (name, expected) in [
+            ("Artwork.png", true),
+            ("Artwork.JPG", true),
+            ("Artwork.tiff", true),
+            ("Artwork.webp", true),
+            ("Artwork.bmp", true),
+            ("Artwork.gif", true),
+            ("Artwork.chromiator", false),
+            ("Artwork.svg", false),
+            ("Artwork.exr", false),
+        ] {
+            let info = file_info(name);
+            assert_eq!(filter.match_(&info), expected, "chooser filter: {name}");
+        }
+    }
+
+    #[test]
+    #[ignore = "requires a display; run in the private Sway session"]
+    fn combined_open_filter_accepts_supported_rasters_and_projects() {
+        gtk::init().expect("GTK display required for file-filter regression");
+        let filter = open_filter(OpenIntent::ImageOrProject);
+        for (name, expected) in [
+            ("Artwork.png", true),
+            ("Artwork.JPG", true),
+            ("Artwork.tiff", true),
+            ("Artwork.webp", true),
+            ("Artwork.bmp", true),
+            ("Artwork.gif", true),
+            ("Artwork.chromiator", true),
+            ("Artwork.CHROMIATOR", true),
+            ("Artwork.threshiator", false),
+            ("Artwork.svg", false),
+            ("Artwork.exr", false),
+        ] {
+            let info = file_info(name);
+            assert_eq!(filter.match_(&info), expected, "chooser filter: {name}");
+        }
+    }
+
+    #[test]
+    #[ignore = "requires a display; run in the private Sway session"]
+    fn preset_load_filter_accepts_current_project_and_json_files() {
+        gtk::init().expect("GTK display required for file-filter regression");
+        let filter = preset_load_filter();
+        for (name, expected) in [
+            ("Artwork.chromiator", true),
+            ("Artwork.CHROMIATOR", true),
+            ("Arcade Four.json", true),
+            ("Arcade Four.JSON", true),
             ("Artwork.png", false),
         ] {
             let info = gio::FileInfo::new();

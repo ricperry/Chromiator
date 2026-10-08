@@ -4,6 +4,12 @@ This editable tracker uses stable `THR-NNN` IDs. Check an item only when its acc
 
 Repository steering policy: newly reported issues are logged here and remain queued; they are not implemented immediately unless the user explicitly requests that issue as the active work.
 
+Current implementation acceptance (2026-10-07): the user accepted the
+implemented Voronoi-only GTK4 application and current editing, preset, smoothing,
+preview/export, and layout work. This records product acceptance only; technical
+and package evidence remains bounded by its stated environments, and deferred
+features remain open.
+
 Unresolved issues are grouped by their primary ownership area and ordered by severity and creator impact: `P0` blocks a core workflow, `P1` materially affects correctness or a primary workflow, `P2` is an important improvement or preventative safeguard, and `P3` is low-impact polish. Cross-cutting dependencies remain explicit in each issue's cross-references.
 
 ## Unresolved — UI/UX
@@ -65,7 +71,9 @@ Unresolved issues are grouped by their primary ownership area and ordered by sev
 ### P1 — High impact
 
 - [x] **THR-045** — `done` · P1 · Display color delivery — Finalized the application boundary: Chromiator supplies a bounded encoded-sRGB GTK preview and delegates monitor-profile selection and final display transformation to the OS, window manager, and compositor. The app will not query EDID/colord, implement display profiling, or claim HDR/wide-gamut presentation. Palette-reduced results that need display-specific grading belong in a purpose-built downstream application. Closed by explicit product decision on 2026-07-16; README and the final PNG/EXR contract state the boundary.
-- [ ] **THR-017** — `in-progress` · P1 · Color pipeline — Design, process, and expose alpha quantization and input smoothing while preserving straight-alpha precision and cancellation. Scoped progress 2026-07-15: global Smooth source 0–10 runs a cancellable separable Gaussian before both engines, filtering premultiplied RGB+alpha then restoring straight alpha; the finalized project v5 and preset v2 formats store the shared setting directly. Full export uses source-pixel amount; bounded preview uses preview-pixel amount as a documented interaction-cost tradeoff. Alpha quantization remains open.
+- [ ] **THR-017** — `in-progress` · P1 · Color pipeline — Design, process, and expose alpha quantization and input smoothing while preserving straight-alpha precision and cancellation. Update 2026-10-07: Smooth source uses Gaussian σ in original source-image pixels from 0 to 10,000; initial and scheduled previews process the full source through the same pipeline as export, then reduce the processed result to the 1600-pixel preview bound. The legacy exact FIR and output are preserved for σ 0.5–10; smaller σ uses a stable exact kernel, and a cancellable three-box approximation is blended in from σ 10–12 for bounded large-radius work. The existing setting remains in project v6 and preset v3 without a schema change. Numeric parity tests cover PNG8 export downsampling at σ 0, 0.1, 10, 11, 25, and 10,000. Private-Sway review `ui-run-20261007-192021-355905` opened a σ=25 project, set/read back 10,000, then verified Undo=25 and Redo=10,000 with clean stderr. At the time of that review, the 1024×768 smoothing controls were readable after moving the divider to 570; THR-065's default-divider follow-up is now separately verified below. The user accepted the smoothing and preview/export parity work on 2026-10-07. The published 0.2.0 AppImage was unchanged at that review; a new internal candidate is recorded under THR-071 and `docs/DISTRIBUTION.md`. Alpha quantization remains open, so this combined issue remains in progress.
+  Release-readiness evidence, 2026-10-07: optimized synthetic 2MP and 8MP fixtures matched the full-source bounded preview and PNG8 export samples exactly at σ 0, 10, 11, 25, and 10,000. At 8MP, σ=11 preview/full processing/export took 3,439/3,430/303 ms and isolated peak RSS was 679,992 KiB; σ=25 took 1,571/1,555/297 ms with 549,656 KiB peak RSS. At σ=10,000 an 8MP cancellation at 2.00% progress exited in 9.15 ms; a 512×256 replacement result was ready 15.28 ms after superseding in-flight 8MP work. Measurements and per-case JSONL are in `target/validation/release-readiness-20261007/large-image-benchmark/`; they are synthetic workload results, not a guarantee for every image or system.
+  The native workflow also passed import → Desert Dusk preset → σ=25 edit → Split comparison → PNG8 export → project save → native reopen. The saved project retained the imported source bytes and its reopened render matched the exported PNG and preview samples exactly; cancellation, malformed raster, and malformed project checks preserved the prior UI state. Artifacts are under `target/validation/release-readiness-20261007/`. Subsequent isolated GNOME/Mutter portal checks are recorded above and in the functional audit; package validation is tracked separately under THR-071. THR-065 layout verification is tracked separately.
 - [x] **THR-018** — `done` · P1 · Import/export — Finalized native file support without a browser compatibility layer: project v5 and preset JSON v2 are the only accepted editable formats; legacy browser JSON/PNG recipes are not imported or embedded. Older pre-release versions are rejected with actionable diagnostics and never migrated or rewritten. Completed 2026-07-16 with exact-version, missing-field, unknown-field, strict-archive, and unchanged-incompatible-preset tests.
 
 ### P2 — Important improvements
@@ -103,6 +111,13 @@ Unresolved issues are grouped by their primary ownership area and ordered by sev
 - [x] **THR-040** — `done` · P1 · Presets — Finalized human-readable preset JSON v2 as the only accepted user-preset format. It stores the complete intentional processing recipe, detaches image positions, excludes artwork/paths/export/UI/job state, and uses atomic XDG writes. Version 1 and malformed/incomplete files remain byte-for-byte untouched and appear as actionable diagnostics; no migration, rename, or automatic rewrite exists. Finalized 2026-07-16 with exact-version/missing-field/unknown-field, leak, round-trip, duplicate, atomic failure, and unchanged-file evidence; the user preset directory was hash-checked before and after this work.
 - [x] **THR-041** — `done` · P1 · Voronoi site editing — Treat each site's Source center color as authoritative and editable, with its image-picker coordinate retained only as optional provenance/convenience. Each site owns its own Target color. Present separate Source and Target swatches on the same site row and open the transactional custom color picker for either; Target edits affect classification output only, while Source edits move the cell center and follow THR-042 reset behavior. Derive OKLab, encoded-sRGB, and cylindrical HSV coordinates from the site's one canonical Source color so changing Color matching never uses stale per-space coordinates. After manual Source editing, visibly detach or clear the old image position; resampling or moving a marker explicitly reattaches it. Persist Source, Target, optional position, Influence, and lock together per site. Acceptance includes transparent/low-alpha sampling policy, color-picker precision/transactions, matching-mode transitions, detach/reattach, project/preset round trips, deterministic preview/export agreement, and unambiguous Source versus Target labeling. Cross-reference THR-013, THR-033, THR-040, and THR-044. Completed 2026-07-14. Evidence: canonical Source with derived OKLab/encoded-RGB/HSV coordinates, separate transactional Source/Target edits, detached/attached marker state, v4 persistence, and focused core plus GTK evidence.
 - [x] **THR-042** — `done` · P1 · Voronoi site replacement — Treat replacing a site's Source center as replacing that site's Source+Target pairing. A newly created site initially uses its sampled Source color as its Target. Thereafter, dragging, nudging, resampling, or directly color-editing that unlocked Source must always overwrite that same site's Target with the new Source color—even when the user previously customized the Target—and refresh the preview. Do not add follow/detach state or a confirmation: moving the center means abandoning the prior pairing and trying a new site+target. Merely selecting a site changes nothing. Make the reset immediately legible by updating both swatches during the completed adjustment; document undo belongs to THR-006, while THR-043 supplies deliberate protection. Acceptance includes create→move, nudge, resample, direct Source edit, customized Target overwrite, independent multi-site behavior, selection no-op, dirty/preview coalescing, project/preset round trips, and inspected Source/Result transitions. Cross-reference THR-038, THR-041, THR-043, THR-044, and THR-006. Completed 2026-07-14. Evidence: centralized create, drag, nudge, footprint, resample, and direct-Source replacement resets Target to Source; selection is a no-op. Expanded 2026-07-18: each replacement path now contributes one THR-006 document transaction; presets remain covered by THR-040.
+
+Historical clarification (2026-10-03): the current implementation preserves the
+authored Target when `VoronoiState::set_source` or `set_size` changes Source
+(`src/document.rs`; regression `site_mutations_preserve_target_and_lock_protects_every_parameter`
+in `tests/core.rs`). The completion narrative above records the earlier
+behavior and is stale as a description of current behavior; preserve it as
+history and reconcile the active product contract separately.
 - [x] **THR-043** — `done` · P1 · Voronoi locks — Give every site one visible lock protecting the complete Source-center+Target-color pair—the immutable site definition the creator has dialled in. A locked site remains selectable and inspectable but cannot be dragged, nudged, resampled, Source-edited, Target-edited, have its Influence changed, or be deleted until explicitly unlocked. Disable all relevant controls and give immediate explanatory feedback rather than silently ignoring input. Be mathematically honest: the lock freezes that site's own parameters, not its exact pixel-membership boundary, which can still move when another unlocked site or the global matching mode changes. New sites default unlocked; locking/unlocking alone does not change processing values or schedule a preview. Persist the lock with the site in projects and presets. Acceptance covers every pointer, keyboard, color-picker, Influence, and deletion path; accessible lock state; standard/narrow layouts; no mutation under lock; unlock→edit; global/neighbor changes without locked-parameter mutation; undo/dirty behavior; and project/preset round trips. Cross-reference THR-033, THR-041, THR-042, THR-044, THR-006, and THR-040. Completed 2026-07-14. Evidence: visible persisted site lock disables Source, Target, Influence, footprint and deletion; pointer/keyboard movement is rejected; lock toggles dirty state without scheduling preview. Expanded 2026-07-18: lock/unlock is undoable, while every refused locked mutation adds no history entry.
 - [x] **THR-044** — `done` · P1 · Voronoi data model — Refactor the native Voronoi recipe around independent sites rather than `ColorGroup { output_color, samples[] }`. Each site is the atomic cell definition: stable ID/order, canonical Source centerpoint in the selected three-dimensional color space, its own Target color, optional competitive weight (currently exposed as Influence), lock, and optional source-image position/sample metadata. For every visible pixel, compute the selected metric against the complete site set, apply the defined weight rule when enabled, choose the nearest eligible site, and assign that site's Target; cell boundaries are therefore derived from surrounding centerpoints, their weights, and the global metric rather than stored as site data. Ties remain deterministic and alpha policy remains deliberate. Locking freezes a site's centerpoint, weight, and Target but never promises a fixed boundary while neighboring sites, weights, or the metric change. Do not retain Color groups as a hidden processing abstraction unless they become purely optional organization with no shared Target semantics. Migrate existing v3 groups by flattening every sample into a site that inherits the former group's Output and preserves its own Source/Influence/position; define empty-group handling and bump/version the project schema safely. Update auto-initialization, processing, coverage, selection, editing, presets, export, CLI evidence, and tests together so preview/full export cannot disagree. Acceptance includes one-site-one-cell fixtures, unweighted/default-weight geometry, controlled weighted-boundary shifts, surrounding-site edits, multiple former samples sharing an inherited Target but becoming independently editable afterward, migration round trips, stable IDs/ties, all matching modes including THR-039 cylindrical HSV, locks, and inspected standard/narrow workflows. Completed 2026-07-14. Evidence: independent VoronoiSite model, site-ID coverage, stable order/ID ties, preserved weighted distance and alpha policy, true HSV cylinder, deterministic v3 flatten migration, v4 validation, 55 core tests, strict build gates, audit, and inspected standard/narrow captures.
 - [x] **THR-046** — `done` · P1 · Color pipeline — Audited the native and archived perceptual paths before implementation. Tagged RGB inputs transform from embedded ICC to canonical encoded sRGB in floating point with relative-colorimetric intent before linearization and OKLab; invalid/non-RGB profiles fail explicitly. The finalized current-only project v5 path always uses that managed decode, and THR-018 removed the former pre-release unmanaged reopen path. Perceptual matching remains exactly Cartesian OKLab `dL² + da² + db²` without axis normalization or UI-space distance. Automatic sites cluster an alpha-weighted bounded histogram of the complete source distribution and choose actual full-resolution Point samples, eliminating nearest-neighbor proxy phase loss. Influence scales the complete squared metric by `2^-clamp(Influence,-4,4)`, with its radial meaning documented. The current bounded linear-sRGB display/PNG/EXR policy is explicit; OKHSL UI and extended-gamut delivery remain correctly owned by THR-051/013/027/045. Completed 2026-07-15 and reconciled with the final format contract on 2026-07-16. Evidence: independent Display-P3 matrix fixture, tagged-sRGB/current-project tests, known OKLab colors/round trips, axis-discriminator and ±4 Influence assignments, checkerboard distribution regression, strict all-target Clippy, release build, 8/8 GTK audit, inspected standard Result and narrow Split artifacts with perceptual sidecars, and independent closeout review.
@@ -117,7 +132,7 @@ Unresolved issues are grouped by their primary ownership area and ordered by sev
 - [x] **THR-057** — `done` · P0 · Voronoi HSV — Replace the archived unit-cylinder HSV metric with an endpoint-aware cone because relative Saturation and unstable Hue retained full radial weight near black, overwhelming a much smaller Value difference and sending dark pixels to brighter sites. HSV now compares `(S·V·cos(H), S·V·sin(H), V)`, which is equivalent to using encoded-RGB chroma as the radial coordinate and naturally collapses Hue at black. OKHSL processing is deliberately unchanged while real-image comparison determines whether that separate matching mode remains useful. Project and preset serialization remain compatible, but existing HSV cell boundaries intentionally change. Completed 2026-07-16. Evidence: the sampled `#010101` → `#010322` versus `#509bb4` regression now selects the darkest site; seam, neutral, Value, deterministic tie, Influence, alpha, preview/full and PNG16 export coverage remain green; 100 native tests, strict Clippy, optimized build, and an inspected live HSV render pass with the darkest example site increasing to 24.6% coverage.
 ## THR-060 - Voronoi-only GTK4 refactor
 
-Status: implementation edits present; final verification and acceptance pending.
+Status: implemented work accepted by the user on 2026-10-07; technical verification remains partial.
 
 User-directed scope: remove Thresholds and mode switching; remove libadwaita;
 adopt Toniator-style GTK4 presentation; extract authoritative document/session,
@@ -127,8 +142,8 @@ Project v6 and preset v3 deliberately reject older files without rewriting them.
 The architecture checkpoint passed 88 tests before the final GTK4 edits.
 Resource/template/dialog compilation, final regression and native UI checks,
 and measured performance decisions remain unverified. See
-`docs/FUNCTIONAL_AUDIT.md` for evidence and remaining checks. No user acceptance
-or complete-refactor claim is implied.
+`docs/FUNCTIONAL_AUDIT.md` for evidence and remaining checks. User acceptance
+covers the current implementation, not technical evidence that was not collected.
 
 Thresholds-only THR-998, THR-024, and THR-023 are superseded by the explicitly
 requested feature removal, not fixed in their former implementation. Their
@@ -186,7 +201,7 @@ before choosing a fix. Do not infer global history failure from this result.
 
 ## THR-065 - Enforce application layout minimums and right-pinned side panel
 
-Status: open; deferred, low-priority follow-up. The user accepts the current work with this known limitation; it is not an acceptance blocker.
+Status: automated layout verified on private Sway and isolated GNOME/Mutter; current layout accepted by the user on 2026-10-07. Broader desktop and assistive-technology review remains open.
 Priority: P3 (low).
 
 This is an application layout enforcement issue, not merely inspector clipping.
@@ -197,15 +212,78 @@ including the divider and relevant spacing. With the panel hidden, allow a
 smaller window consistent with the canvas minimum. Preserve vertical scrolling
 for settings that exceed the available height.
 
-The user normally works with a larger window to view artwork and access settings;
-the current small-window behavior is understandable and is not bothering them.
-No layout implementation change is requested now.
+The visible inspector should remain right-pinned, with its width preserved when
+the window is resized. Hiding the inspector should permit a narrower window;
+compact header controls must remain available through the Document menu.
 
-Evidence: resizing the private output from 1440x1000 to 1024x600 leaves side-panel
-controls clipped beyond the right edge. The attempted sizing fix did not resolve
-this in the 2026-09-19 native check. Manual panel hiding yielded a usable 720x600
-canvas in the earlier check. See `docs/BUG_HUNT_FOLLOWUP_2026-09-19.md` and
-`responsive-1024.png` / `responsive-720-hidden.png` in the earlier bug-hunt evidence.
+Historical report (2026-09-19): resizing the private output from 1440x1000 to
+1024x600 clipped side-panel controls, and the attempted fix did not resolve it
+in that check. Manual panel hiding yielded a usable 720x600 canvas. See
+`docs/BUG_HUNT_FOLLOWUP_2026-09-19.md` and `responsive-1024.png` /
+`responsive-720-hidden.png` in the earlier bug-hunt evidence.
+Completed 2026-10-07. The workspace now keeps a minimum 344 px canvas and
+360 px right-pinned inspector, with a 716 px visible-workspace minimum. When
+the inspector is hidden, Save/Undo/Redo move into the Document menu and the
+window can shrink to 600 px. The preferred inspector width survives temporary
+minimum-size clamps, hiding/showing, and window resizing.
+
+Evidence: private-Sway readback moved the divider to 500 at 1024 px, hid the
+inspector and resized to 600 px, showed it again (the window returned to its
+visible-workspace minimum), then grew to 1180 px and restored divider position
+656 with the same chosen inspector width. A follow-up extreme-drag run clamped
+the divider at 344 after dragging to 0 and at 808 after dragging to the far
+right at 1180 px; shrinking to 716×450 kept the inspector controls visible and
+vertically scrollable with Site 5 expanded. Captures include
+`divider-hidden-600-final.png` and `divider-hidden-menu.png` from
+`ui-run-20261007-211111-471880`, `divider-restored-preferred.png` from
+`ui-run-20261007-211456-488880`, and `divider-short-fixed.png` /
+`divider-scrolled.png` from `ui-run-20261007-212156-527488` under
+`.codex-work/evidence/`. An automated isolated GNOME 50.5/Mutter check also
+maximized at 1280×800 and restored to 1144×736 with the mapping and five-site
+inspector visible; see `target/validation/release-readiness-20261007/gnome/`.
+The portal open/cancel and PNG8 export/source/project pixel verifier passed in
+that isolated run; `final-debug-app.log` is empty. The focused split-bound test,
+strict Clippy, and build passed. The user's 2026-10-07 acceptance covers this
+current layout; broader desktop and assistive-technology review remains open.
+
+Follow-up 2026-10-07: the user found that dragging the workspace divider beyond
+its limits with the mouse held made it alternate between GTK's dragged position
+and the application's idle clamp. The earlier extreme-drag checks read the
+position only after release, so they missed this. The pane now assigns its
+start/end children without GtkBuilder's bare-child defaults overriding the
+non-shrink settings; the viewer requests its 344 px minimum, and position
+notifications record the preferred inspector width without scheduling a clamp.
+When the window is too narrow to fit that preferred width, only a real pointer
+drag or focused-pane key action can replace it; GTK's resize notifications
+cannot silently erase it.
+In a private-Sway held-drag comparison at 1180 px, the previous binary's 100
+rightward held samples included 808, 1117, and 1125, then returned to 808 on
+release. The current binary held at 815 for all 100 moving and 30 stationary
+samples and remained there on release; a leftward run held and released at 346.
+The 1024/500 to 1180/656 width-restoration check still passed. Raw traces are
+under `target/validation/divider-drag-20261007/`. The canvas border now has
+square corners, as inspected in `.codex-work/evidence/ui-run-20261007-220459-591391/fixed-ready.png`.
+A final real-pointer workflow chose 500 at 1024 px, hid the inspector, shrank
+the window to 600 px, showed the inspector, and grew to 1180 px; it restored
+656. After narrowing to 800 px, an intentional pointer drag chose 420, and
+growing back to 1180 px placed the divider at 800. The focused split test,
+strict binary Clippy, and current debug build passed after this input-origin
+change. The final debug rebuild repeated the held-drag check: all 100 moving,
+30 stationary, and release samples stayed at 815 on the right and 346 on the
+left (`final-right.json` and `final-left.json` in the same validation directory).
+
+The final-source AppImage at
+`target/distribution/0.2.0-icn3p06p/appimage/output/Chromiator-0.2.0-x86_64.AppImage`
+passed AppDir and extracted-payload audits (119 ELF files, zero errors) and a
+normal FUSE private-Sway launch with saved project and populated Color sites.
+Its held pointer traces stayed at 1073 right and 346 left through all 100
+moving, 30 stationary, and release samples of a 1438 px pane; the inspected
+`ui-run-20261007-222015-660143/packaged-corners.png` shows square canvas corners.
+Packaged stderr was empty. This scoped package smoke did not rerun the prior
+candidate's clean-Debian project workflow or GNOME portal export; see
+`docs/DISTRIBUTION.md`. Final-source isolated GNOME maximize/restore kept the
+pane and Color sites/Site 1 available through semantic readback, but its portal
+screenshot request failed, so GNOME visual acceptance remains pending.
 > THR-061 status update (2026-09-19): implemented and verification complete;
 > artistic user acceptance pending. Priority P1. This supersedes the earlier
 > implementation-in-progress and solver/serialization blocker notes below.
@@ -236,3 +314,371 @@ canvas in the earlier check. See `docs/BUG_HUNT_FOLLOWUP_2026-09-19.md` and
 > opt-in release checks, inspected images and a focused private-Sway transition
 > check pass. See `docs/TRANSITION_TEST_CLEANUP.md`; earlier records below are
 > historical. THR-066 remains open for pre-alpha format/preset cleanup.
+
+## Unresolved — release verification and distribution
+
+- [ ] **THR-070** — `in-progress` · P1 · Release evidence — Freeze v0.2.0, project v6,
+  preset v3, and all 19 built-ins as read-only golden anchors; generate compact
+  deterministic ramp, boundary, saturated/neutral, 256-alpha, and flat-art
+  fixtures. Record full winner-site IDs per pixel as well as rendered pixels;
+  coverage counts alone cannot establish partition identity. Compare preview,
+  export, PNG8 alpha/RGB, dimensions, embedded source bytes, reopened recipe,
+  width 0/100, smoothing, ordered hue operations, zero-site pass-through,
+  Desert Dusk, and target-only edits. Old v5/v2 files must still reject without
+  rewrite. User decision (2026-10-03): preserve existing rendering and saved
+  compatibility; document and test the exact conditions for source-alpha and
+  selected-Target preservation. This supersedes THR-066's earlier permission
+  for compatibility breaks within this task. No implementation or acceptance
+  is implied. Cross-reference
+  THR-061 and THR-066. Stage 0 is authorized for headless characterization;
+  GUI verification and acceptance remain pending. Headless result
+  (2026-10-03): five focused regressions pass with the first-capture generator
+  ignored. The 19 serialized presets and applied recipes, v6 project/source
+  reopen, hard and blended output, PNG8 alpha/Target membership, matching-space
+  and edit winner maps, smoothing, hue ordering, and zero-site behavior are
+  frozen. See `tests/fixtures/release-0.2.0/SHA256SUMS` and
+  `target/validation/stage-0/release-anchor-candidate/`. No GUI/Sway or clean
+  system launch was attempted, so THR-070 remains in progress.
+
+  Stage 0 update (2026-10-03): the user accepted the headless regression
+  evidence. GUI and workflow coverage was not accepted and remains open; THR-070
+  stays `in-progress`.
+
+- [ ] **THR-071** — `verified; human acceptance pending` · P0 · Distribution/runtime — Establish a reproducible
+  x86_64 package on a pinned build environment for the proposed Debian 13 /
+  glibc 2.41 minimum and current Fedora 44 native Wayland. Audit the complete
+  AppImage ELF/helper closure and host Fontconfig, HarfBuzz, and glycin
+  providers. The current artifact hash
+  `e5005adb8ed75796bbf222f919d3821695eb18bdcbec719a00aaa828e6168c70` matches
+  published v0.2.0; static inspection found seven bundled libraries requiring
+  GLIBC_2.43, while the main executable requires at most 2.35. Fontconfig and
+  HarfBuzz providers are host-resolved. This is a package-compatibility failure
+  against the proposed floor, not a clean Debian runtime reproduction. Verify
+  welcome decode fallback without masking artwork or Spectrum Example errors.
+  On a clean minimum-baseline machine, use a smoke harness with explicit
+  package/output paths and prebuilt fixtures, no Cargo build or `target/debug`
+  assumption; test default welcome launch, FUSE and extracted `AppRun`
+  separately, PNG import/export, and project save/reopen through the GUI.
+  Retain dependency reports, logs, screenshots, and output hashes. Cross-reference
+  THR-034, THR-035, and THR-066. The user authorized Stage 1 packaging build
+  and headless audit implementation in this turn. At that implementation
+  stage, fresh GUI and clean-Debian runtime verification were still pending;
+  current-candidate results are recorded below. The embedded welcome decoration now
+  uses the Rust raster decoder and can be omitted on decode failure. Both
+  headless welcome tests pass, including valid Spectrum pixel-byte equality.
+  A pinned Debian 13 x86_64 builder, explicit Fontconfig/HarfBuzz closure, and
+  fail-closed AppDir ABI audit are implemented; the retained v0.2.0 AppDir fails
+  the audit for seven GLIBC_2.43 libraries and missing providers as expected.
+  Planning-time status before the pinned runtime was supplied (2026-10-03):
+  the builder had not run and no compatible AppImage existed; see the current
+  Stage 1 result below.
+
+  Earlier Stage 1 result (2026-10-04; supersedes the planning-time statement
+  above that the pinned builder had not run): the Debian 13 x86_64 image
+  `3e74a6b29fcfaa36ce01a16c40f356ba68509920002a37360129defbf09ec537` built
+  with glibc 2.41, the Rust 1.97.1 archive hash verified, and offline release
+  compilation passed. The staged AppDir audit passed for 119 ELF files, maximum
+  GLIBC 2.39, zero errors against 2.41, Debian `ldd -r` resolution, and
+  loadable bundled Fontconfig/HarfBuzz providers. Its report is
+  `target/distribution/0.2.0-kj2p818g/appimage/output/abi-audit.json`.
+  The official AppImage type-2 runtime input is now versioned and hash-pinned:
+  release 20251108, source commit
+  `dd6cebedcbddde9c82f89b011e8e1d40b6e43868`, release ID 260789861, asset ID
+  326011592, 944632 bytes, SHA-256
+  `2fca8b443c92510f1483a883f60061ad09b46b978b2631c807cd873a47ec260d`.
+  Local verification matched the GitHub API digest; the release is versioned
+  but is not marked immutable. Host and builder verify the input, stage it
+  read-only, and pass it to the output plugin with network disabled. The
+  2026-10-03 attempt using the prior path failed on appimagetool's mutable
+  runtime fallback. The attempted command `python3 -B scripts/build_distributions.py
+  appimage > target/distribution/stage1-build-5.log 2>&1` was rejected before
+  execution with `approval required by policy, but AskForApproval is set to
+  Never`; it was not retried. No candidate/hash or extracted
+  payload audit exists. Packaging tests passed 13/13; AppImage `--check`,
+  Python compile, smoke-script syntax, and diff checks passed in the writer's
+  recorded results.
+  GUI was authorized but remains blocked by the execution-policy gate. The
+  Earlier (2026-10-03), inventory/preflight and SquashFS inspection attempts
+  were rejected with
+  `approval required by policy, but AskForApproval is set to Never`; they were
+  not retried, and current VM/runtime availability is unresolved. See
+  The prior attempt is recorded in `target/distribution/stage1-build-4.log`.
+  no `stage1-build-5.log` result exists. Runtime retrieval, exact CLI use, and
+  Runtime retrieval and provenance instructions are in `docs/DISTRIBUTION.md`;
+  verification history is in `docs/FUNCTIONAL_AUDIT.md`. This dated planning
+  status predates the completed current-candidate package checks below; no
+  publication or Stage 2 work is implied.
+
+  Candidate continuation (2026-10-04): the supported new-task approval path
+  permitted the pinned pipeline. Build 5 was rejected by the strict audit for
+  Vulkan-loader reinsertion; build 6 stopped on CLI syntax. The bounded final-pass
+  exclusion fix now uses repeated options verified with the pinned binary;
+  all 13 packaging tests pass. Build 7 produced a 28,228,088-byte AppImage,
+  SHA-256 `a123e544a6069701235a338c2a0174a972db1fe7e5a0a2f782318732c3bdf621`. Post-output AppDir and
+  extracted-payload audits both pass: 119 ELF files, maximum GLIBC 2.39,
+  zero errors against 2.41. Evidence: `target/distribution/0.2.0-vsd173k4/appimage/output/`
+  and `target/distribution/stage1-build-7.log`. Base `425760c` plus local packaging
+  fix and the preserved local icon input are recorded in candidate provenance.
+  Fedora GUI control is unavailable through native CUA in this task;
+  FUSE/GUI and clean-Debian runtime checks remain pending. THR-071 stays
+  `in-progress`; this is test readiness, not acceptance. No further commit,
+  push, release, or Stage 2 work is implied.
+
+  Bounded cloud update (2026-10-04): the unchanged candidate SHA-256
+  `a123e544a6069701235a338c2a0174a972db1fe7e5a0a2f782318732c3bdf621`
+  passed extracted GUI testing on Debian 13.6/glibc 2.41, XFCE/X11 with a
+  Cairo renderer environment override and no host-library replacement. All
+  five 256 × 128 GUI exports matched golden RGBA exactly; hard output used
+  five RGB colors with exact source alpha at smoothing/hue 0. Save, close,
+  relaunch, and reopen preserved golden v6 source bytes and recipe. Static
+  audit: 119 ELF files, zero errors, maximum GLIBC 2.39. Evidence reported by
+  the cloud test handoff: ChatGPT Library `libfile_edc44f21a56c81918da4a0391cefe8ec`;
+  detailed qualifications are in `docs/FUNCTIONAL_AUDIT.md`.
+  Ordinary FUSE launch failed because `/dev/fuse` was absent; stock extracted
+  launch aborted on missing `libGLESv2.so.2`. Development tools were installed,
+  so the Cairo pass is not pristine-runtime acceptance. THR-071 stays
+  `in-progress`: stock extracted dependency/prerequisite verification, clean
+  minimum-runtime workflow, FUSE-capable launch, and Fedora GNOME/Wayland GUI
+  verification remain open. Fedora native CUA was unavailable. Cross-reference
+  the newly recorded chooser mismatch THR-075. No implementation is authorized
+  by this evidence-recording update.
+
+  Previous internal candidate update (2026-10-07; the q93 candidate is superseded
+  by the current-source rebuild, whose final evidence is recorded separately):
+  pinned build candidate
+  `target/distribution/0.2.0-q93_3i2j/appimage/output/Chromiator-0.2.0-x86_64.AppImage`,
+  29,583,864 bytes, SHA-256
+  `6919478aa842246f16f871ae254da54d78f35274e6f6c97daeb088ef136b45a5`, based on
+  HEAD `aff7001ed23e3d3ac63cdec39cd5e57fba17e3c0` plus retained dirty Ctrl+O and
+  packaging edits. Both final AppDir/payload audits pass for 119 ELF objects,
+  zero errors, maximum GLIBC 2.39 against the 2.41 ceiling. Clean Debian 13.7 /
+  glibc 2.41 stock AppRun testing used a runtime-only image (no compiler,
+  `pkg-config`, GTK development package, launch network, or GPU device). Direct
+  runtime packages: `fontconfig`, `fonts-dejavu-core`, `libegl1`, `libgbm1`,
+  `libgl1-mesa-dri`, `libgles2`, `libvulkan1`, `mesa-vulkan-drivers`,
+  `shared-mime-info`, and `xkb-data`; see the retained full package manifest.
+  Adwaita icons are bundled. An A/B run established that host
+  `shared-mime-info` supplies required MIME data for SVG icons. The hook loaded
+  the relocated SVG loader/librsvg; with `GSK_RENDERER` unset, process maps
+  showed EGL/GLES/Mesa userspace, without GPU passthrough (no hardware
+  acceleration claim).
+
+  The clean runtime rendered welcome and Spectrum, imported the raw PNG fixture,
+  opened and saved/reopened the v6 project with matching source bytes and full
+  manifest, and exported 256 × 128 RGBA pixels exactly matching the hard golden.
+  Ordinary FUSE launch on the Fedora host mounted and rendered welcome and
+  Spectrum. The helper's AT-SPI name query first timed out because it queried
+  `Chromiator` while the package root was `AppRun.wrapped`. Explicitly selecting
+  `AppRun.wrapped` still exposed only a top-level frame; the cause is unconfirmed
+  and is recorded under THR-077. Spectrum selection used the screenshot. The
+  package GUI launch succeeded, but its AT-SPI readback remains unverified.
+  Logs, screenshots, manifests, artifact hashes, and provenance are under
+  `target/distribution/0.2.0-q93_3i2j/appimage/`. All GUI evidence for q93 is
+  private Sway; Fedora GNOME/Mutter and portal checks were not performed on
+  that candidate. The later isolated debug-app GNOME checks do not transfer to
+  q93 or any AppImage. Current-source package runtime checks are recorded
+  below; human acceptance remains pending. The general smoke script was not used.
+  Cross-reference THR-073 and THR-077; no separate issue ID was added for the
+  unconfirmed packaged-tree observation.
+
+  Superseded source-pixel candidate (2026-10-07):
+  `target/distribution/0.2.0-zdff2hnm/appimage/output/Chromiator-0.2.0-x86_64.AppImage`,
+  29,608,440 bytes, SHA-256
+  `2de350f485847f2df97a8991393c6b1e6d009a6d281d5e14d43d2697b41f97e5`, based
+  on checkpoint `98c28be` plus retained worktree changes. Its captured
+  `src/main.rs` matched the file at that build and includes the deferred
+  GtkPaned position clamp later replaced for held-drag behavior. AppDir and
+  packaged-payload audits pass for 119 ELF
+  objects, zero errors, and maximum GLIBC 2.39 against 2.41; both SHA256SUMS
+  checks pass.
+
+  On Fedora's isolated GNOME 50.5/Mutter session, ordinary FUSE launch and
+  AppRun.wrapped AT-SPI readback passed; five color sites remained visible after
+  maximize/restore. Portal Open/Cancel and PNG8 export/save passed, with
+  byte-identical portal and native outputs and empty packaged-app stderr. In
+  clean Debian 13.7/glibc 2.41, stock AppRun used the default renderer without
+  `GSK_RENDERER` override, compiler, `pkg-config`, host Adwaita theme, or
+  launch-time network. The packaged project loaded, exported PNG8, saved with
+  Save As, and reopened through the native chooser; verification confirmed
+  exact source bytes and pixel equality between reopened processing, export,
+  and preview samples. Evidence is under
+  `target/validation/release-readiness-20261007/` and
+  `.codex-work/evidence/ui-run-20261007-212156-527488/`. The full preset/edit/
+  compare/reopen workflow passed in private Sway; GNOME only exercised portal
+  open/cancel and export/save, not project choice and editing. Human acceptance
+  remains pending; see `docs/DISTRIBUTION.md` for artifact details.
+
+  Current-source divider-fix candidate (2026-10-07):
+  `target/distribution/0.2.0-icn3p06p/appimage/output/Chromiator-0.2.0-x86_64.AppImage`,
+  29,608,440 bytes, SHA-256
+  `aac5f8904f65321b573414656c5ece703054585d0ba0b802ab8c6ee40f4eff69`.
+  The captured main source, UI template, and stylesheet hashes match the final
+  local files; all 22 unrelated worktree file hashes remained unchanged from
+  the preflight inventory. Both AppDir and extracted-package audits pass for
+  119 ELF files, zero errors
+  against the proposed GLIBC 2.41 baseline. Ordinary FUSE launch in private
+  Sway loaded a saved project and a populated Color sites inspector; package
+  held-drag readback stayed at 1073 right and 346 left across 100 moving,
+  30 stationary, and release samples at a 1438 px pane. The inspected package
+  screenshot shows square canvas corners, and packaged stderr was empty.
+  This smoke did not repeat the predecessor's GNOME portal/export or
+  clean-Debian project workflows; their results remain historical to that
+  earlier source. Human desktop review and user acceptance remain pending;
+  see `docs/DISTRIBUTION.md` for exact artifacts.
+
+- [ ] **THR-072** — `open` · P1 · Editing workflow proposal — After THR-070 and
+  THR-071 review, observe small-palette remapping, Target edits, independent
+  Source/Target editing, Influence, geometry, and hard/blended artwork results.
+  Present a bounded proposal around the existing Transition width, with one
+  undo transaction and clear Source-anchor/output, matching/blend-space, and
+  marker/export explanations. Make conflicting smoothing, hue, and empty-site
+  settings visible rather than promising exact tones or unchanged alpha when
+  those conditions are not met. Do not add a serialized mode, change defaults or
+  presets, claim a Target swatch always equals final output, or redesign the
+  engine here. THR-034, THR-035, and THR-061 are related; implementation needs
+  separate scope approval.
+
+- [ ] **THR-073** — `verified; user accepted 2026-10-07` · P1 · Integrated workflow verification — After
+  separate scope approval, verify welcome → import → edit → compare → export →
+  save → reopen with preset and regression cases. Compare full output pixels,
+  dimensions, embedded source bytes, and reopened recipe; inspect marker-free
+  exports beside editor screenshots. Snapshot document, selection, history,
+  redo, dirty state, and output around dialog cancellation. Actual long-running
+  render/export cancellation remains a separate follow-up; ordinary dialog
+  cancellation does not prove it. Invalid raster/project input must leave the
+  active document intact. Keep focused tests, full locked-suite results, strict
+  Clippy/build, screenshots, and artifacts; distinguish automated evidence from
+  human GNOME acceptance. Cross-reference THR-006, THR-034, THR-035, THR-061,
+  and THR-066.
+
+  Verification update (2026-10-07): the full GUI workflow passed on private
+  Sway: import, apply Desert Dusk, edit σ, compare in Split view, export PNG8,
+  save, and reopen. The verifier confirmed exact embedded source bytes and
+  pixel equality between reopened processing, export, and sampled preview;
+  cancellation and malformed raster/project cases preserved the active state.
+  The isolated GNOME 50.5/Mutter run additionally passed portal open/cancel and
+  native PNG8 export/source/project verification, but did not repeat the full
+  preset/edit/reopen path. Artifacts are under
+  `target/validation/release-readiness-20261007/`; automated checks passed and
+  the user accepted the current implemented workflow on 2026-10-07. Long-running
+  render/export cancellation and broader desktop/assistive-technology coverage
+  remain separate follow-ups.
+
+- [ ] **THR-074** — `open` · P2 · Deferred strict-palette mode — User-requested
+  follow-up (2026-10-03), outside the current implementation scope. Design an
+  opt-in strict-palette mode with explicit processing order, smoothing/alpha,
+  hue, empty-site, serialization, and compatibility behavior before coding.
+  Acceptance requires a separately approved contract and all-visible-pixel
+  palette/alpha tests; never reinterpret existing projects. Depends on THR-070
+  characterization and THR-072 conflict feedback.
+
+- [ ] **THR-075** — `in-progress` · P2 · File-opening UX — Ctrl+O's tooltip advertises
+  opening an image or project, but the invoked image-only chooser rejects
+  `.chromiator` files. Reproduced in the bounded Debian 13.6/XFCE/X11 Cairo
+  cloud test of the Stage 1 candidate; the dedicated Open Project action
+  successfully opened the same project. Evidence: ChatGPT Library
+  `libfile_edc44f21a56c81918da4a0391cefe8ec`. Implementation update
+  (2026-10-07): the header Open/Ctrl+O chooser now accepts the supported raster
+  types and `.chromiator`, then routes by the selected path. The welcome Start
+  New Project action remains image-only and the dedicated Open Project action
+  remains project-only. Pure routing and dirty-replacement guard tests pass;
+  all four display-backed chooser/preset filter tests pass. The debug binary
+  builds and focused strict Clippy passes. Private-Sway keyboard Ctrl+O opened
+  the combined chooser and loaded both `stage0-scene.png` and the v6
+  `desert-dusk-v6.chromiator` fixture; the dedicated Open Project menu retained
+  its project-only chooser. Cancel preserved the active project, and dirty
+  Cancel/Discard plus invalid-project error paths preserved the active
+  document. Screenshots and runtime logs are under
+  `.codex-work/evidence/ui-run-20261007-145946-166754/` and
+  `.codex-work/evidence/ui-run-20261007-150424-172142/`. This is private-Sway
+  evidence; user and real GNOME/portal acceptance remain pending. Cross-reference
+  THR-071, THR-073, and THR-077.
+
+- [x] **THR-076** — `done` · P1 · Preset menu and Color mapping workspace —
+  Move Select Preset, Load Preset, and Save Preset from the inspector to the
+  header menu. Selection combines built-in looks with the XDG personal
+  PresetStore and requires explicit Apply; Cancel leaves the document alone.
+  Load current preset v3 JSON or a validated project v6 as processing settings
+  only, preserving the active source, project association, viewport, and export
+  defaults; application is one DocumentSession undo operation. Save writes only
+  current processing settings. Make Color mapping collapsible and move its
+  explanatory subtext into control tooltips. The implementation and headless
+  loader/history tests are present. Private-Sway evidence verifies standard
+  and narrow collapsed/expanded layouts, built-in and personal preset
+  application, Cancel/reopen, JSON load, and saving the current recipe. The
+  project-as-preset reader is headlessly tested with a v6 fixture; its chooser
+  workflow was not independently verified. Narrow 1024×600 screenshots use a
+  semantic pane adjustment to position 610; default splitter placement remains
+  tracked under THR-065. Full AT-SPI readback and real GNOME/portal acceptance
+  remain unverified; see THR-077. The user accepted the accumulated work and
+  confirmed the intended UI behavior on 2026-10-07. This closes the product
+  change without claiming the separate automation or packaging gates passed.
+
+- [ ] **THR-077** — `in-progress` · P2 · GTK/AT-SPI audit crashes during dynamic UI
+  queries — On GTK 4.22.5, GLib 2.88.3, and AT-SPI 2.60.7, the blanket semantic
+  query can segfault around a disappearing/rebuilt widget during preset or file
+  chooser transitions. The retained gdb trace reaches AT-SPI
+  `handle_accessible_method` → `g_variant_new` → SIGSEGV at
+  `.codex-work/evidence/ui-run-20261007-121617-32737/app.stdout.log`. A second
+  probe with accessibility relations disabled and dispatch-only reads also
+  failed during an asynchronous chooser transition. A fatal-critical gdb run
+  isolated GTK's application-root `GetChildAtIndex` branch: it obtains a
+  top-level window context with a NULL object path and passes that path to
+  `g_variant_new` during chooser removal
+  (`.codex-work/evidence/ui-run-20261007-145840-165580/app.stdout.log`).
+  The private harness now enumerates application and descendant children from
+  public AT-SPI `GetChildren` snapshots, with local indexing and native
+  Action/Value/Text/Selection/Relation readbacks. A bus trace shows five
+  application-root `GetChildren` and zero application `GetChildAtIndex` calls.
+  Eighty concurrent full-tree polls and 12 chooser open/Cancel cycles passed
+  with fresh editor readback and no GTK critical; preset Cancel/reopen/Apply
+  and Ctrl+O dirty/error transitions also passed in private Sway. Evidence:
+  `.codex-work/evidence/ui-run-20261007-150424-172142/`. No app accessibility
+  relations or descriptions changed. Real GNOME/portal and broader assistive
+  technology acceptance remain pending. Packaging observation (2026-10-07):
+  the superseded q93 FUSE candidate rendered normally, but the AT-SPI view
+  exposed only a top-level frame even after selecting `AppRun.wrapped`; the
+  helper's `Chromiator` name query also timed out. On the current-source
+  candidate, ordinary FUSE launch and explicit `AppRun.wrapped` readback found
+  the mapping and five-site controls through maximize/restore. This supersedes
+  the q93 packaged-root observation for that path; broad assistive-technology
+  acceptance and remaining dynamic-widget scenarios are still pending. See
+  `target/validation/release-readiness-20261007/gnome/` and
+  `target/distribution/0.2.0-q93_3i2j/appimage/runtime-clean-debian-20261007/host-fuse-evidence/`.
+  Cross-reference THR-071, THR-076, and THR-073.
+
+- [ ] **THR-078** — `in-progress` · P2 · Automatic site initialization — Nearby
+  dominant shades could consume the initial site budget before small, distinct
+  highlights and accent colors were considered. Initialization now uses the
+  full-resolution alpha-weighted source distribution in a bounded equal-volume
+  40³ OKLab grid. The strongest complete-link color family anchors the palette;
+  additional sites come from compact local density modes measured with a
+  normalized 0.05 core and 0.10 shell, and are chosen from real source pixels
+  only when actual swatches remain at least 0.05 apart. Connected plateaus are
+  collapsed, diffuse low-density fields do not fill slots, smooth gradients fall
+  back to coalesced families, and six remains a cap rather than a target. The
+  second full-source pass now chooses the actual pixel nearest the voxel's
+  alpha-weighted OKLab center; this intentionally replaces the former local
+  3×3 exact-color-support tie-break. Tests cover merged dominant shades, compact
+  accents spread across voxels with at most two pixels each, an equal-mass
+  diffuse field with more than two pixels in every bin at two grid phases,
+  white/cyan patches, singleton noise, transparent pixels, flat plateaus,
+  gradient fallback, a distinct-tone chain, and cap/no-padding behavior. Seven
+  focused tests and all 80 core tests pass; the artifact generator is the one
+  ignored test. Strict binary Clippy and the debug build pass. Evidence under
+  `target/validation/auto-palette-diversity/` includes the source fixture,
+  `after-identity.png` with the initial identity Targets, and a separately
+  labeled `diagnostic-recolored.png` with artificial Targets. Native review
+  passed in private Sway using the rebuilt debug binary. The synthetic source
+  moved from one site to three (dominant brown family, white, cyan); Spectrum
+  moved from four sites to six. Native site readback exactly matches
+  `after-identity.png.json`, and each initial Target equals its sampled Source
+  color. The raw 100×100 export preserves source alpha byte-for-byte and has 40
+  white pixels, 40 cyan pixels, 9,919 brown pixels, and one transparent black
+  pixel. Screenshots and sidecars are under
+  `target/validation/auto-palette-diversity/`; correlated run logs are under
+  `.codex-work/evidence/ui-run-20261007-182741-323846/` and
+  `.codex-work/evidence/ui-run-20261007-182807-324545/`, both with empty app
+  stderr. The prior AppImage was not rebuilt for this initializer, so this is
+  not packaged-app evidence. Real GNOME/portal and user acceptance remain
+  pending. Cross-reference THR-046.

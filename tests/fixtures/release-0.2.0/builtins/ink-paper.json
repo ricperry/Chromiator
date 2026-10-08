@@ -1,0 +1,111 @@
+{
+  "version": 3,
+  "name": "Ink & Paper",
+  "description": "Charcoal ink, cool gray, and warm paper",
+  "processing": {
+    "preprocessing": {
+      "input_smoothing": 0.0
+    },
+    "voronoi": {
+      "sites": [
+        {
+          "id": 1,
+          "order": 1,
+          "source_color": [
+            0.002428216,
+            0.0027317428,
+            0.004024717,
+            1.0
+          ],
+          "target_color": [
+            0.0056053917,
+            0.0065120906,
+            0.010329823
+          ],
+          "influence": 0.2,
+          "locked": false,
+          "position": null,
+          "size": "Point"
+        },
+        {
+          "id": 2,
+          "order": 2,
+          "source_color": [
+            0.064803265,
+            0.08228271,
+            0.104616486,
+            1.0
+          ],
+          "target_color": [
+            0.051269457,
+            0.08228271,
+            0.107023105
+          ],
+          "influence": 0.0,
+          "locked": false,
+          "position": null,
+          "size": "Point"
+        },
+        {
+          "id": 3,
+          "order": 3,
+          "source_color": [
+            0.48514995,
+            0.4452012,
+            0.37626213,
+            1.0
+          ],
+          "target_color": [
+            0.57758045,
+            0.52099556,
+            0.39157248
+          ],
+          "influence": 0.0,
+          "locked": false,
+          "position": null,
+          "size": "Point"
+        },
+        {
+          "id": 4,
+          "order": 4,
+          "source_color": [
+            0.9559733,
+            0.9301109,
+            0.8549926,
+            1.0
+          ],
+          "target_color": [
+            1.0,
+            0.9046612,
+            0.67244315
+          ],
+          "influence": 0.1,
+          "locked": false,
+          "position": null,
+          "size": "Point"
+        }
+      ],
+      "next_site_id": 5,
+      "matching": "Perceptual",
+      "transition": {
+        "start": 0.5,
+        "midpoint": 0.5,
+        "end": 0.5
+      }
+    },
+    "steps": [
+      {
+        "working_space": "Oklch",
+        "components": "Hue",
+        "operation": {
+          "RotateHue": {
+            "degrees": 0.0
+          }
+        },
+        "pass_through": "PreserveUnselectedComponents",
+        "alpha": "PassThroughStraight",
+        "conversion_back": "KeepLinearSrgbF32"
+      }
+    ]
+  }
+}

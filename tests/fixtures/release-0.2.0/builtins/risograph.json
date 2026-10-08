@@ -1,0 +1,92 @@
+{
+  "version": 3,
+  "name": "Risograph",
+  "description": "Teal and coral spot inks on warm paper; no simulated halftones",
+  "processing": {
+    "preprocessing": {
+      "input_smoothing": 0.0
+    },
+    "voronoi": {
+      "sites": [
+        {
+          "id": 1,
+          "order": 1,
+          "source_color": [
+            0.030713445,
+            0.15292615,
+            0.18782078,
+            1.0
+          ],
+          "target_color": [
+            0.008568126,
+            0.15292615,
+            0.18782078
+          ],
+          "influence": 0.15,
+          "locked": false,
+          "position": null,
+          "size": "Point"
+        },
+        {
+          "id": 2,
+          "order": 2,
+          "source_color": [
+            0.52099556,
+            0.14412847,
+            0.14126329,
+            1.0
+          ],
+          "target_color": [
+            0.82278574,
+            0.17788842,
+            0.13013647
+          ],
+          "influence": 0.0,
+          "locked": false,
+          "position": null,
+          "size": "Point"
+        },
+        {
+          "id": 3,
+          "order": 3,
+          "source_color": [
+            0.80695224,
+            0.73046076,
+            0.50888133,
+            1.0
+          ],
+          "target_color": [
+            0.91309863,
+            0.82278574,
+            0.6239604
+          ],
+          "influence": 0.0,
+          "locked": false,
+          "position": null,
+          "size": "Point"
+        }
+      ],
+      "next_site_id": 4,
+      "matching": "Perceptual",
+      "transition": {
+        "start": 0.5,
+        "midpoint": 0.5,
+        "end": 0.5
+      }
+    },
+    "steps": [
+      {
+        "working_space": "Oklch",
+        "components": "Hue",
+        "operation": {
+          "RotateHue": {
+            "degrees": 0.0
+          }
+        },
+        "pass_through": "PreserveUnselectedComponents",
+        "alpha": "PassThroughStraight",
+        "conversion_back": "KeepLinearSrgbF32"
+      }
+    ]
+  }
+}

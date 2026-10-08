@@ -6,7 +6,8 @@ use crossbeam_channel::{Receiver, Sender, TrySendError, bounded, unbounded};
 
 use crate::document::{PixelImage, Recipe};
 use crate::processing::{
-    Coverage, DisplayBuffer, process_cancellable_with_progress_and_coverage, to_display_rgba8,
+    Coverage, DisplayBuffer, process_preview_cancellable_with_progress_and_coverage,
+    to_display_rgba8,
 };
 
 #[derive(Clone, Default)]
@@ -141,7 +142,7 @@ impl PreviewScheduler {
         let worker_generation = generation.clone();
         thread::spawn(move || {
             while let Ok(request) = worker_requests.recv() {
-                if let Some((image, coverage)) = process_cancellable_with_progress_and_coverage(
+                if let Some((image, coverage)) = process_preview_cancellable_with_progress_and_coverage(
                     &request.source,
                     &request.recipe,
                     request.generation,
@@ -165,6 +166,7 @@ impl PreviewScheduler {
         }
     }
 
+    /// Schedule a recipe against the full authoritative source; only the processed result is bounded.
     pub fn schedule(&self, source: PixelImage, recipe: Recipe) -> u64 {
         let generation = self.generation.fetch_add(1, Ordering::AcqRel) + 1;
         let mut request = Request {

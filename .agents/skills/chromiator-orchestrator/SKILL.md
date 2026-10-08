@@ -1,14 +1,15 @@
 ---
 name: chromiator-orchestrator
-description: GPT-6 Astra high parent orchestration for Chromiator engineering, Voronoi-focused GTK refactoring, and verification using the project's private Sway skill. Use for bounded project work and specialist routing.
+description: Coordinate substantive Chromiator engineering, Voronoi-focused GTK refactoring, and verification using the project's private Sway skill. Use for bounded project work and specialist routing; tiny incidental edits can stay with the parent.
 ---
 
-# Chromiator Astra orchestration
+# Chromiator orchestration
 
-Own scope, settled decisions, integration, and final evidence. The intended
-parent is `gpt-6-astra` / `high`, configured in `.codex/config.toml`.
-This skill does not switch a running model. Work directly when delegation adds
-little value; use specialists for independent questions or meaningful review.
+The selected parent owns scope, settled decisions, integration, and final
+evidence. Use ROUTINE for substantive bounded delegation by default, including
+implementation work that a single specialist can complete. Keep only tiny
+incidental edits in the parent. Use specialist readers and reviewers when they
+answer an independent question or provide meaningful verification.
 
 ## Current app and next-task boundary
 
@@ -107,29 +108,41 @@ their sandbox cannot launch the stateful harness.
 
 ## Specialist routing
 
-| Role | Default | Use when |
+Use these exact profiles for delegated work:
+
+| Profile | Assignment | When to use |
 | --- | --- | --- |
-| `codebase_explorer` | Luna max | A bounded ownership/caller or removal-impact question is unresolved. |
-| `desktop_implementer` | Sol high | A settled GTK/state refactor benefits from delegated implementation. |
-| `product_architect` | Sol high | A consequential product or ownership choice needs independent reasoning. |
-| `color_pipeline_specialist` | Sol high | Color metrics, precision, raster I/O, or export semantics are at risk. |
-| `test_performance_reviewer` | Luna max | Deterministic regression or measured responsiveness needs independent review. |
-| `ux_reviewer` | Sol high | Changed GTK interaction/accessibility warrants independent scrutiny. |
-| `creative_tester` | Luna max | Artistic results or creative workflow need practitioner review. |
+| ROUTINE | `gpt-6-luna` / `max` | Default for substantive exploration, design, implementation, and review. |
+| ESCALATED | `gpt-6-sol` / `xhigh` | Difficult reasoning exceeds ROUTINE after checking instructions, context, tools, and project authority, or clear complexity justifies starting there. |
+| FRONTIER | `gpt-6-astra` / `high` | Architecture reconciliation, conflicting specifications, difficult cross-domain judgment, exceptional difficulty, a genuine blocker, or a demonstrated Sol capability limit. Importance or size alone is not a trigger. |
 
-These are starting assignments, not a proven cost/quality ranking.
-Astra handles consequential integration and may implement directly.
-Do not run every role, impose a model escalation ladder, or repeat exploration.
-Correct missing context or tooling before blaming model capability.
+Keep each role purpose-specific: `codebase_explorer` traces ownership and
+callers; `desktop_implementer` owns settled GTK/state implementation;
+`product_architect` resolves consequential product or ownership choices;
+`color_pipeline_specialist` checks numerical and image-processing semantics;
+`test_performance_reviewer` checks regressions and measured responsiveness;
+`ux_reviewer` reviews actual interaction and accessibility evidence; and
+`creative_tester` assesses artistic results and creator workflow. Select the
+profile for the task rather than assigning a model permanently to a role.
 
-Current role files define child defaults. Consult active tool metadata before
-spawning: fixed custom roles may retain session-cached model/effort settings.
-Reload for new definitions, or use a supported generic role with a complete
-bounded brief and explicit supported model/effort when necessary.
-Full-history forks may inherit the parent and reject overrides. Never silently
-substitute an unavailable model or claim actual model attestation from TOML.
-See [official subagent configuration](https://learn.chatgpt.com/docs/agent-configuration/subagents)
-for configuration behavior; runtime exposure governs what can be used here.
+The parent owns consequential decisions and integration. Delegate substantive
+writing to `desktop_implementer` by default; keep one writer, avoid nested
+delegation, and do not run roles mechanically or repeat exploration. Correct
+missing context or tooling before escalating. Role files define purpose and
+permissions; project defaults provide ROUTINE, while the selected profile is
+chosen for each task. Use one profile per child. These pairs are fixed; change
+them only when the user explicitly instructs it. Do not tune effort separately.
+
+Restart the session to load changed defaults and role-pin removals. In an
+existing session, use an unpinned generic role and pass the explicit
+model/effort pair for any profile, including ROUTINE; stale cached custom-role
+pins can override the spawn choice. Full-history forks inherit the parent and
+reject such overrides; use a supported fork mode that accepts the explicit
+profile. Verify actual model/effort from runtime or session metadata when
+available; otherwise distinguish the requested profile from verified
+identity. See
+[official subagent configuration](https://learn.chatgpt.com/docs/agent-configuration/subagents)
+for configuration behavior; current runtime support governs what is available.
 
 ## Verification and handoff
 

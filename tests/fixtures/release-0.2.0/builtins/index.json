@@ -1,0 +1,120 @@
+{
+  "preset_version": 3,
+  "presets": [
+    {
+      "id": "ink-paper",
+      "name": "Ink & Paper",
+      "serialized": "builtins/ink-paper.json",
+      "source": "src/starter_looks.rs"
+    },
+    {
+      "id": "desert-dusk",
+      "name": "Desert Dusk",
+      "serialized": "builtins/desert-dusk.json",
+      "source": "resources/presets/desert-dusk.json"
+    },
+    {
+      "id": "blueprint",
+      "name": "Blueprint",
+      "serialized": "builtins/blueprint.json",
+      "source": "src/starter_looks.rs"
+    },
+    {
+      "id": "arcade-four",
+      "name": "Arcade Four",
+      "serialized": "builtins/arcade-four.json",
+      "source": "resources/presets/arcade-four.json"
+    },
+    {
+      "id": "night-neon",
+      "name": "Night Neon",
+      "serialized": "builtins/night-neon.json",
+      "source": "src/starter_looks.rs"
+    },
+    {
+      "id": "graphite",
+      "name": "Graphite",
+      "serialized": "builtins/graphite.json",
+      "source": "src/starter_looks.rs"
+    },
+    {
+      "id": "sepia-press",
+      "name": "Sepia Press",
+      "serialized": "builtins/sepia-press.json",
+      "source": "src/starter_looks.rs"
+    },
+    {
+      "id": "teal-and-tangerine",
+      "name": "Teal and Tangerine",
+      "serialized": "builtins/teal-and-tangerine.json",
+      "source": "src/starter_looks.rs"
+    },
+    {
+      "id": "moss-and-clay",
+      "name": "Moss and Clay",
+      "serialized": "builtins/moss-and-clay.json",
+      "source": "src/starter_looks.rs"
+    },
+    {
+      "id": "primary-print",
+      "name": "Primary Print",
+      "serialized": "builtins/primary-print.json",
+      "source": "src/starter_looks.rs"
+    },
+    {
+      "id": "soft-pastel",
+      "name": "Soft Pastel",
+      "serialized": "builtins/soft-pastel.json",
+      "source": "src/starter_looks.rs"
+    },
+    {
+      "id": "mimeograph",
+      "name": "Mimeograph",
+      "serialized": "builtins/mimeograph.json",
+      "source": "resources/presets/mimeograph.json"
+    },
+    {
+      "id": "photocopy",
+      "name": "Photocopy",
+      "serialized": "builtins/photocopy.json",
+      "source": "resources/presets/photocopy.json"
+    },
+    {
+      "id": "carbon-copy",
+      "name": "Carbon Copy",
+      "serialized": "builtins/carbon-copy.json",
+      "source": "src/starter_looks.rs"
+    },
+    {
+      "id": "old-newsprint",
+      "name": "Old Newsprint",
+      "serialized": "builtins/old-newsprint.json",
+      "source": "resources/presets/old-newsprint.json"
+    },
+    {
+      "id": "two-color-press",
+      "name": "Two-Color Press",
+      "serialized": "builtins/two-color-press.json",
+      "source": "src/starter_looks.rs"
+    },
+    {
+      "id": "risograph",
+      "name": "Risograph",
+      "serialized": "builtins/risograph.json",
+      "source": "src/starter_looks.rs"
+    },
+    {
+      "id": "smudged-graphite",
+      "name": "Smudged Graphite",
+      "serialized": "builtins/smudged-graphite.json",
+      "source": "resources/presets/smudged-graphite.json"
+    },
+    {
+      "id": "watercolor",
+      "name": "Watercolor",
+      "serialized": "builtins/watercolor.json",
+      "source": "resources/presets/watercolor.json"
+    }
+  ],
+  "release_commit": "7f7f7353ff315c73636e5e3afc7a82ac9e7a37be"
+}

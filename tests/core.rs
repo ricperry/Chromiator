@@ -1,11 +1,11 @@
 use std::fs;
-use std::io::Write;
+use std::io::{Cursor, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
 use std::time::{Duration, Instant};
 
-use image::{ImageBuffer, ImageFormat, Rgba};
+use image::{DynamicImage, ImageBuffer, ImageFormat, Rgba};
 use chromiator::color::{
     ColorModel, DraftColor, PickerTransaction, PlaneKey, adjust_okhsl, encoded_to_hsl,
     encoded_to_hsv, encoded_to_linear, hsl_to_encoded, hsv_to_encoded, in_srgb_gamut,
@@ -15,22 +15,25 @@ use chromiator::color::{
 use chromiator::document::{
     ComponentOperation, ComponentSet, ConversionBack, Document, ExportDefaults, PassThroughPolicy,
     Preprocessing, ProcessingStep, ProfileInterpretation, Recipe, SampleSize, TransitionProfile,
-    VoronoiMatching, VoronoiSite, VoronoiState, WorkingColorSpace,
+    MAX_INPUT_SMOOTHING_SIGMA, VoronoiMatching, VoronoiSite, VoronoiState, WorkingColorSpace,
 };
 use chromiator::export::{self, ExportFormat};
 use chromiator::preset::{Preset, PresetStore, apply_to_document, validate_name};
 use chromiator::processing::{
     CompiledVoronoi, PREVIEW_MAX_DIMENSION, bounded_preview, gaussian_blur_cancellable, process,
-    process_cancellable_with_progress_and_coverage, rotate_oklch, srgb_to_linear, to_display_rgba8,
+    process_cancellable_with_progress_and_coverage,
+    process_preview_cancellable_with_progress_and_coverage, rotate_oklch, srgb_to_linear,
+    to_display_rgba8,
 };
 use chromiator::project;
 use chromiator::raster;
 use chromiator::scheduler::{JobCoordinator, LatestGeneration, PreviewScheduler, ProgressTracker};
+use chromiator::session::{DocumentSession, EditCommand};
 use chromiator::starter_looks::{STARTER_LOOKS, apply_starter_look, recipe_for_starter_look};
 use chromiator::voronoi::{auto_initialize, linear_rgb_to_oklab, reattach_site, sample_color};
 use chromiator::workflow::{
-    OpenKind, ReplacementDecision, SaveResolution, classify_open_path, ensure_project_extension,
-    replacement_decision, resolve_pending_after_save,
+    OpenIntent, OpenKind, ReplacementDecision, SaveResolution, classify_open_path,
+    ensure_project_extension, replacement_decision, resolve_pending_after_save,
 };
 use zip::write::SimpleFileOptions;
 
@@ -71,6 +74,258 @@ fn gaussian_smoothing_zero_constant_impulse_alpha_and_cancellation() {
     );
     generation.store(2, std::sync::atomic::Ordering::Release);
     assert!(gaussian_blur_cancellable(&source, 1.0, 1, &generation, |_| {}).is_none());
+}
+
+fn previous_gaussian_fir(source: &chromiator::document::PixelImage, sigma: f32) -> Vec<[f32; 4]> {
+    let radius = (3.0 * sigma).ceil() as i32;
+    let mut weights = (-radius..=radius)
+        .map(|offset| (-(offset * offset) as f32 / (2.0 * sigma * sigma)).exp())
+        .collect::<Vec<_>>();
+    let sum: f32 = weights.iter().sum();
+    for weight in &mut weights {
+        *weight /= sum;
+    }
+    let width = source.width as usize;
+    let height = source.height as usize;
+    let mut horizontal = vec![[0.0; 4]; source.pixels.len()];
+    for y in 0..height {
+        for x in 0..width {
+            let mut premul = [0.0; 4];
+            for (kernel, offset) in weights.iter().zip(-radius..=radius) {
+                let sx = (x as i32 + offset).clamp(0, width as i32 - 1) as usize;
+                let pixel = source.pixels[y * width + sx];
+                premul[0] += pixel[0] * pixel[3] * kernel;
+                premul[1] += pixel[1] * pixel[3] * kernel;
+                premul[2] += pixel[2] * pixel[3] * kernel;
+                premul[3] += pixel[3] * kernel;
+            }
+            horizontal[y * width + x] = premul;
+        }
+    }
+    let mut output = vec![[0.0; 4]; source.pixels.len()];
+    for y in 0..height {
+        for x in 0..width {
+            let mut premul = [0.0; 4];
+            for (kernel, offset) in weights.iter().zip(-radius..=radius) {
+                let sy = (y as i32 + offset).clamp(0, height as i32 - 1) as usize;
+                let pixel = horizontal[sy * width + x];
+                for channel in 0..4 {
+                    premul[channel] += pixel[channel] * kernel;
+                }
+            }
+            let alpha = premul[3].clamp(0.0, 1.0);
+            output[y * width + x] = if alpha > 1.0e-8 {
+                [premul[0] / alpha, premul[1] / alpha, premul[2] / alpha, alpha]
+            } else {
+                [0.0; 4]
+            };
+        }
+    }
+    output
+}
+
+#[test]
+fn gaussian_smoothing_preserves_the_existing_fir_at_legacy_sigma_values() {
+    let source = chromiator::document::PixelImage::new(
+        9,
+        7,
+        (0..63)
+            .map(|index| {
+                let x = (index % 9) as f32 / 8.0;
+                let y = (index / 9) as f32 / 6.0;
+                [x, y, (x * 0.37 + y * 0.63).min(1.0), ((index * 13) % 17) as f32 / 16.0]
+            })
+            .collect(),
+    )
+    .unwrap();
+    let generation = AtomicU64::new(1);
+    for sigma in [0.5, 1.25, 10.0] {
+        let actual = gaussian_blur_cancellable(&source, sigma, 1, &generation, |_| {}).unwrap();
+        assert_eq!(actual.pixels.as_ref(), previous_gaussian_fir(&source, sigma));
+    }
+}
+
+#[test]
+fn gaussian_smoothing_uses_small_sigma_and_cancellable_linear_large_sigma() {
+    let generation = AtomicU64::new(1);
+    let step = chromiator::document::PixelImage::new(
+        5,
+        1,
+        vec![
+            [0.0, 0.0, 0.0, 1.0],
+            [0.0, 0.0, 0.0, 1.0],
+            [1.0, 1.0, 1.0, 1.0],
+            [1.0, 1.0, 1.0, 1.0],
+            [1.0, 1.0, 1.0, 1.0],
+        ],
+    )
+    .unwrap();
+    let small = gaussian_blur_cancellable(&step, 0.1, 1, &generation, |_| {}).unwrap();
+    let below_floor = gaussian_blur_cancellable(&step, 1.0e-30, 1, &generation, |_| {}).unwrap();
+    assert!(small.pixels[1][0] < 0.001);
+    assert!(below_floor.pixels.iter().all(|pixel| pixel.iter().all(|c| c.is_finite())));
+    assert_eq!(below_floor.pixels.as_ref(), step.pixels.as_ref());
+
+    let width = 201;
+    let height = 201;
+    let mut pixels = vec![[0.0, 0.0, 0.0, 0.0]; width * height];
+    pixels[(height / 2) * width + width / 2] = [1.0, 0.2, 0.1, 1.0];
+    let impulse = chromiator::document::PixelImage::new(width as u32, height as u32, pixels).unwrap();
+    let blurred = gaussian_blur_cancellable(&impulse, 25.0, 1, &generation, |_| {}).unwrap();
+    let mut alpha_sum = 0.0_f64;
+    let mut variance_x = 0.0_f64;
+    let mut variance_y = 0.0_f64;
+    for (index, pixel) in blurred.pixels.iter().enumerate() {
+        let x = (index % width) as f64 - (width / 2) as f64;
+        let y = (index / width) as f64 - (height / 2) as f64;
+        let alpha = f64::from(pixel[3]);
+        alpha_sum += alpha;
+        variance_x += alpha * x * x;
+        variance_y += alpha * y * y;
+        if alpha > 1.0e-7 {
+            assert!((pixel[0] - 1.0).abs() < 2.0e-5);
+            assert!((pixel[1] - 0.2).abs() < 2.0e-5);
+        }
+    }
+    assert!((alpha_sum - 1.0).abs() < 2.0e-5);
+    eprintln!(
+        "box impulse σ25 variance: x {:.6}, y {:.6}",
+        variance_x / alpha_sum,
+        variance_y / alpha_sum
+    );
+    assert!((variance_x / alpha_sum - 625.0).abs() < 12.0);
+    assert!((variance_y / alpha_sum - 625.0).abs() < 12.0);
+
+    let constant = chromiator::document::PixelImage::new(2, 3, vec![[0.2, 0.4, 0.7, 0.5]; 6]).unwrap();
+    let wide = gaussian_blur_cancellable(&constant, 10_000.0, 1, &generation, |_| {}).unwrap();
+    assert!(wide.pixels.iter().all(|pixel| {
+        pixel.iter().zip([0.2, 0.4, 0.7, 0.5]).all(|(a, b)| (*a - b).abs() < 1.0e-6)
+    }));
+    let alpha_edge = chromiator::document::PixelImage::new(
+        3,
+        1,
+        vec![[1.0, 0.0, 0.0, 0.0], [0.0, 0.0, 0.0, 0.0], [0.0, 0.0, 1.0, 1.0]],
+    )
+    .unwrap();
+    let blurred_edge = gaussian_blur_cancellable(&alpha_edge, 25.0, 1, &generation, |_| {}).unwrap();
+    assert!(blurred_edge.pixels.iter().any(|pixel| pixel[3] > 0.0));
+    assert!(blurred_edge.pixels.iter().all(|pixel| {
+        pixel[0] == 0.0 && pixel[1] == 0.0 && (pixel[3] == 0.0 || (pixel[2] - 1.0).abs() < 1.0e-6)
+    }));
+    generation.store(2, std::sync::atomic::Ordering::Release);
+    assert!(gaussian_blur_cancellable(&impulse, 10_000.0, 1, &generation, |_| {}).is_none());
+}
+
+#[test]
+fn gaussian_exact_to_three_box_transition_is_bounded_and_progress_is_monotonic() {
+    let width = 173;
+    let height = 61;
+    let source = chromiator::document::PixelImage::new(
+        width,
+        height,
+        (0..width * height)
+            .map(|index| {
+                let x = index % width;
+                let red = if x < width / 2 { 0.0 } else { 1.0 };
+                [red, 0.25, 1.0 - red, if index % 19 == 0 { 0.4 } else { 1.0 }]
+            })
+            .collect(),
+    )
+    .unwrap();
+    let generation = AtomicU64::new(1);
+    let exact = gaussian_blur_cancellable(&source, 10.0, 1, &generation, |_| {}).unwrap();
+    let approximate = gaussian_blur_cancellable(&source, 10.0001, 1, &generation, |_| {}).unwrap();
+    let mut maximum = 0.0_f32;
+    let mut squared = 0.0_f64;
+    let mut count = 0usize;
+    for (left, right) in exact.pixels.iter().zip(approximate.pixels.iter()) {
+        for channel in 0..4 {
+            let difference = (left[channel] - right[channel]).abs();
+            maximum = maximum.max(difference);
+            squared += f64::from(difference * difference);
+            count += 1;
+        }
+    }
+    let rms = (squared / count as f64).sqrt();
+    eprintln!("sigma 10.0 → 10.0001 transition: max {maximum:.6}, RMS {rms:.6}");
+    assert!(maximum < 0.03, "max transition difference {maximum}");
+    assert!(rms < 0.005, "RMS transition difference {rms}");
+
+    let mut edge_impulse = vec![[0.0, 0.0, 0.0, 0.0]; 257];
+    edge_impulse[0] = [1.0, 1.0, 1.0, 1.0];
+    let edge_impulse =
+        chromiator::document::PixelImage::new(257, 1, edge_impulse).unwrap();
+    let edge_exact = gaussian_blur_cancellable(&edge_impulse, 10.0, 1, &generation, |_| {}).unwrap();
+    let edge_transition =
+        gaussian_blur_cancellable(&edge_impulse, 10.0001, 1, &generation, |_| {}).unwrap();
+    let edge_differences = edge_exact
+        .pixels
+        .iter()
+        .zip(edge_transition.pixels.iter())
+        .flat_map(|(left, right)| {
+            let alpha_delta = (left[3] - right[3]).abs();
+            let mut deltas = vec![alpha_delta];
+            for channel in 0..3 {
+                deltas.push((left[channel] * left[3] - right[channel] * right[3]).abs());
+            }
+            deltas
+        })
+        .collect::<Vec<_>>();
+    let edge_maximum = edge_differences.iter().copied().fold(0.0_f32, f32::max);
+    let edge_rms = (edge_differences
+        .iter()
+        .map(|value| f64::from(*value * *value))
+        .sum::<f64>()
+        / edge_differences.len() as f64)
+        .sqrt();
+    eprintln!("edge impulse σ10 → σ10.0001: max {edge_maximum:.6}, RMS {edge_rms:.6}");
+    assert!(edge_maximum < 0.0001, "edge impulse jump {edge_maximum}");
+
+    let mut recipe = Recipe::default();
+    recipe.preprocessing.input_smoothing = 25.0;
+    let mut fractions = Vec::new();
+    process_cancellable_with_progress_and_coverage(&source, &recipe, 1, &generation, |fraction| {
+        fractions.push(fraction);
+    })
+    .unwrap();
+    assert!(fractions.windows(2).all(|pair| pair[0] <= pair[1]));
+    assert_eq!(fractions.last(), Some(&1.0));
+    let blur_units = 3 * (width + height);
+    let total_units = 2 * height + blur_units;
+    assert!(fractions.contains(&(blur_units as f64 / total_units as f64)));
+
+    recipe.preprocessing.input_smoothing = 11.0;
+    let mut blended_fractions = Vec::new();
+    process_cancellable_with_progress_and_coverage(
+        &source,
+        &recipe,
+        1,
+        &generation,
+        |fraction| blended_fractions.push(fraction),
+    )
+    .unwrap();
+    assert!(blended_fractions.windows(2).all(|pair| pair[0] <= pair[1]));
+    assert_eq!(blended_fractions.last(), Some(&1.0));
+    let blended_blur_units = 3 * height + 3 * (width + height);
+    let blended_total_units = 2 * height + blended_blur_units;
+    assert!(blended_fractions.contains(&(blended_blur_units as f64 / blended_total_units as f64)));
+
+    let cancel_generation = AtomicU64::new(1);
+    let cancel_after = 2 + 3 * (257 + 1) + 1;
+    let mut reported = 0;
+    let cancelled = gaussian_blur_cancellable(
+        &edge_impulse,
+        11.0,
+        1,
+        &cancel_generation,
+        |units| {
+            reported += units;
+            if reported >= cancel_after {
+                cancel_generation.store(2, std::sync::atomic::Ordering::Release);
+            }
+        },
+    );
+    assert!(cancelled.is_none(), "blend completion must honor cancellation");
 }
 
 #[test]
@@ -130,14 +385,19 @@ fn built_in_looks_are_voronoi_only_valid_distinct_and_idempotent() {
 
 #[test]
 fn preprocessing_and_transition_profiles_validate_at_recipe_and_render_boundaries() {
-    for valid in [0.0, 0.75, 10.0] {
+    for valid in [0.0, 0.1, 0.75, 10.0, MAX_INPUT_SMOOTHING_SIGMA] {
         Preprocessing {
             input_smoothing: valid,
         }
         .validate()
         .unwrap();
     }
-    for invalid in [-0.01, 10.01, f32::NAN, f32::INFINITY] {
+    for invalid in [
+        -0.01,
+        MAX_INPUT_SMOOTHING_SIGMA + 0.01,
+        f32::NAN,
+        f32::INFINITY,
+    ] {
         assert!(
             Preprocessing {
                 input_smoothing: invalid,
@@ -146,6 +406,32 @@ fn preprocessing_and_transition_profiles_validate_at_recipe_and_render_boundarie
             .is_err()
         );
     }
+    let mut max_sigma_recipe = Recipe::default();
+    max_sigma_recipe.preprocessing.input_smoothing = MAX_INPUT_SMOOTHING_SIGMA;
+    max_sigma_recipe.validate().unwrap();
+    let roundtrip: Recipe =
+        serde_json::from_str(&serde_json::to_string(&max_sigma_recipe).unwrap()).unwrap();
+    assert_eq!(roundtrip, max_sigma_recipe);
+
+    let (source_bytes, decoded) = tiny_source();
+    let document = Document {
+        source_name: "max-sigma.png".into(),
+        source_bytes: source_bytes.into(),
+        source: decoded.pixels,
+        interpretation: decoded.interpretation,
+        recipe: max_sigma_recipe.clone(),
+        export_defaults: ExportDefaults::default(),
+        dirty: false,
+    };
+    let directory = tempfile::tempdir().unwrap();
+    let project_path = directory.path().join("max-sigma.chromiator");
+    project::save(&project_path, &document).unwrap();
+    assert_eq!(project::open(&project_path).unwrap().recipe, max_sigma_recipe);
+    let preset_store = PresetStore::at(directory.path().join("presets"));
+    let preset = Preset::new("Maximum sigma", None, &max_sigma_recipe).unwrap();
+    let preset_path = preset_store.save(&preset, false).unwrap();
+    assert_eq!(Preset::load(&preset_path).unwrap().recipe(), max_sigma_recipe);
+
     TransitionProfile::HARD.validate().unwrap();
     for invalid in [
         TransitionProfile {
@@ -675,6 +961,23 @@ fn write_project_fixture(path: &Path, manifest: &serde_json::Value, source: &[u8
     archive.finish().unwrap();
 }
 
+fn read_project_fixture(path: &Path) -> (serde_json::Value, Vec<u8>) {
+    let mut archive = zip::ZipArchive::new(fs::File::open(path).unwrap()).unwrap();
+    let mut manifest = String::new();
+    archive
+        .by_name("manifest.json")
+        .unwrap()
+        .read_to_string(&mut manifest)
+        .unwrap();
+    let mut source = Vec::new();
+    archive
+        .by_name("source/original")
+        .unwrap()
+        .read_to_end(&mut source)
+        .unwrap();
+    (serde_json::from_str(&manifest).unwrap(), source)
+}
+
 #[test]
 fn preset_v3_roundtrips_complete_recipe_and_v2_is_rejected_without_rewrite() {
     let root = tempfile::tempdir().unwrap();
@@ -725,6 +1028,159 @@ fn recipe_for_detached_sites(recipe: &Recipe) -> Recipe {
         site.position = None;
     }
     detached
+}
+
+#[test]
+fn preset_file_loader_extracts_v6_projects_and_current_v3_json() {
+    let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/release-0.2.0/desert-dusk-v6.chromiator");
+    let project_document = project::open(&fixture).unwrap();
+    let imported_project = Preset::load_from_file(&fixture).unwrap();
+    assert_eq!(imported_project.version, 3);
+    assert_eq!(imported_project.name, "desert-dusk-v6");
+    assert_eq!(
+        imported_project.recipe(),
+        recipe_for_detached_sites(&project_document.recipe)
+    );
+    assert!(
+        imported_project
+            .recipe()
+            .voronoi
+            .sites
+            .iter()
+            .all(|site| site.position.is_none())
+    );
+
+    // The released v6 fixture has detached sites already. Attach one in a temporary copy to
+    // prove the project-to-preset path also strips image positions.
+    let (mut manifest, source_bytes) = read_project_fixture(&fixture);
+    manifest["recipe"]["voronoi"]["sites"][0]["position"] = serde_json::json!([0.25, 0.75]);
+    let directory = tempfile::tempdir().unwrap();
+    let attached_project = directory.path().join("attached.chromiator");
+    write_project_fixture(&attached_project, &manifest, &source_bytes);
+    let attached_document = project::open(&attached_project).unwrap();
+    assert_eq!(
+        attached_document.recipe.voronoi.sites[0].position,
+        Some([0.25, 0.75])
+    );
+    let imported_attached_project = Preset::load_from_file(&attached_project).unwrap();
+    assert_eq!(
+        imported_attached_project.recipe(),
+        recipe_for_detached_sites(&attached_document.recipe)
+    );
+
+    let preset_file = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("resources/presets/arcade-four.json");
+    let imported_json = Preset::load_from_file(&preset_file).unwrap();
+    assert_eq!(imported_json.version, 3);
+    assert_eq!(imported_json.name, "Arcade Four");
+    assert_eq!(imported_json, Preset::load(&preset_file).unwrap());
+    assert!(
+        imported_json
+            .recipe()
+            .voronoi
+            .sites
+            .iter()
+            .all(|site| site.position.is_none())
+    );
+
+    let uppercase_json = directory.path().join("Arcade Four.JSON");
+    fs::copy(&preset_file, &uppercase_json).unwrap();
+    assert_eq!(
+        Preset::load_from_file(&uppercase_json).unwrap(),
+        imported_json
+    );
+}
+
+#[test]
+fn imported_processing_preset_uses_one_session_edit_and_preserves_document_identity() {
+    let project_file = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/release-0.2.0/desert-dusk-v6.chromiator");
+    let mut session = DocumentSession::default();
+    session.load(project::open(&project_file).unwrap()).unwrap();
+    let before = session.document_cloned().unwrap();
+
+    let preset_file = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("resources/presets/arcade-four.json");
+    let preset = Preset::load_from_file(&preset_file).unwrap();
+    let replacement_recipe = preset.recipe();
+    let change = session
+        .edit(EditCommand::ReplaceRecipe(replacement_recipe.clone()), None)
+        .unwrap();
+    assert!(change.changed);
+    assert!(change.preview_required);
+    assert_eq!(session.undo_len(), 1);
+    assert_eq!(session.redo_len(), 0);
+
+    let after = session.document().unwrap();
+    assert_eq!(after.recipe, replacement_recipe);
+    assert!(after.dirty);
+    assert_eq!(after.source_name, before.source_name);
+    assert_eq!(after.source_bytes, before.source_bytes);
+    assert!(after.source.shares_storage_with(&before.source));
+    assert_eq!(after.interpretation, before.interpretation);
+    assert_eq!(after.export_defaults, before.export_defaults);
+
+    session.undo().unwrap();
+    assert_eq!(session.document().unwrap().recipe, before.recipe);
+    assert!(!session.document().unwrap().dirty);
+    assert_eq!(session.undo_len(), 0);
+    assert_eq!(session.redo_len(), 1);
+    session.redo().unwrap();
+    assert_eq!(session.document().unwrap().recipe, replacement_recipe);
+    assert!(session.document().unwrap().dirty);
+    assert_eq!(session.undo_len(), 1);
+    assert_eq!(session.redo_len(), 0);
+    assert!(
+        session
+            .document()
+            .unwrap()
+            .source
+            .shares_storage_with(&before.source)
+    );
+}
+
+#[test]
+fn invalid_project_as_preset_leaves_active_document_and_history_unchanged() {
+    let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/release-0.2.0/desert-dusk-v6.chromiator");
+    let (mut manifest, source_bytes) = read_project_fixture(&fixture);
+    manifest["version"] = serde_json::json!(5);
+    let directory = tempfile::tempdir().unwrap();
+    let legacy_project = directory.path().join("legacy.chromiator");
+    write_project_fixture(&legacy_project, &manifest, &source_bytes);
+
+    let mut session = DocumentSession::default();
+    session.load(project::open(&fixture).unwrap()).unwrap();
+    session.edit(EditCommand::SetSmoothing(1.25), None).unwrap();
+    session.edit(EditCommand::SetHue(23.0), None).unwrap();
+    session.undo().unwrap();
+    let before = session.document_cloned().unwrap();
+    let undo_before = session.undo_len();
+    let redo_before = session.redo_len();
+
+    let result = Preset::load_from_file(&legacy_project);
+    assert!(result
+        .as_ref()
+        .is_err_and(|error| format!("{error:#}").contains("version 5")));
+    if let Ok(preset) = result {
+        session
+            .edit(EditCommand::ReplaceRecipe(preset.recipe()), None)
+            .unwrap();
+    }
+
+    let after = session.document().unwrap();
+    assert_eq!(after.source_name, before.source_name);
+    assert_eq!(after.source_bytes, before.source_bytes);
+    assert!(after.source.shares_storage_with(&before.source));
+    assert_eq!(after.interpretation, before.interpretation);
+    assert_eq!(after.recipe, before.recipe);
+    assert_eq!(after.export_defaults, before.export_defaults);
+    assert_eq!(after.dirty, before.dirty);
+    assert_eq!(session.undo_len(), undo_before);
+    assert_eq!(session.redo_len(), redo_before);
+    assert!(session.can_undo());
+    assert!(session.can_redo());
 }
 
 #[test]
@@ -950,6 +1406,625 @@ fn stale_preview_coverage_cannot_replace_latest_generation() {
         assert!(start.elapsed() < Duration::from_secs(5));
         std::thread::sleep(Duration::from_millis(5));
     }
+}
+
+#[test]
+fn full_source_scheduler_preview_matches_png8_export_downsample_for_all_sigma_paths() {
+    let width = 2048_u32;
+    let height = 32_u32;
+    let pixels = (0..height)
+        .flat_map(|y| {
+            (0..width).map(move |x| {
+                let encoded = if x % 257 == 0 {
+                    [1.0, 0.92, 0.2]
+                } else if x < 700 {
+                    [0.12, 0.28, 0.78]
+                } else if x < 1370 {
+                    [0.86, 0.18, 0.08]
+                } else {
+                    [0.1, 0.7, 0.34]
+                };
+                let alpha = if (x + y * 7) % 113 == 0 {
+                    0.0
+                } else if (x + y * 11) % 29 == 0 {
+                    0.35
+                } else {
+                    1.0
+                };
+                [
+                    srgb_to_linear(encoded[0]),
+                    srgb_to_linear(encoded[1]),
+                    srgb_to_linear(encoded[2]),
+                    alpha,
+                ]
+            })
+        })
+        .collect();
+    let source = chromiator::document::PixelImage::new(width, height, pixels).unwrap();
+    let scheduler = PreviewScheduler::new();
+    let directory = tempfile::tempdir().unwrap();
+    let generation = AtomicU64::new(1);
+
+    for sigma in [0.0, 0.1, 10.0, 11.0, 25.0, MAX_INPUT_SMOOTHING_SIGMA] {
+        let mut recipe = Recipe::default();
+        recipe.preprocessing.input_smoothing = sigma;
+        recipe.set_hue_degrees(17.0);
+        recipe.voronoi.sites = vec![
+            sample(
+                1,
+                [srgb_to_linear(0.12), srgb_to_linear(0.28), srgb_to_linear(0.78)],
+                [0.08, 0.14, 0.94],
+                0.0,
+            ),
+            sample(
+                2,
+                [srgb_to_linear(0.86), srgb_to_linear(0.18), srgb_to_linear(0.08)],
+                [0.95, 0.18, 0.11],
+                0.0,
+            ),
+            sample(
+                3,
+                [srgb_to_linear(0.1), srgb_to_linear(0.7), srgb_to_linear(0.34)],
+                [0.12, 0.82, 0.28],
+                0.0,
+            ),
+        ];
+        let (full, full_coverage) = process_cancellable_with_progress_and_coverage(
+            &source,
+            &recipe,
+            1,
+            &generation,
+            |_| {},
+        )
+        .unwrap();
+        let export_path = directory.path().join(format!("sigma-{sigma}.png"));
+        export::export(&export_path, &full, ExportFormat::Png8).unwrap();
+        let exported = image::open(export_path).unwrap().to_rgba8();
+
+        let expected_generation = scheduler.schedule(source.clone(), recipe.clone());
+        let start = Instant::now();
+        let preview = loop {
+            if let Some(result) = scheduler.try_latest()
+                && result.generation == expected_generation
+            {
+                break result;
+            }
+            assert!(
+                start.elapsed() < Duration::from_secs(10),
+                "preview timed out at σ={sigma}"
+            );
+            std::thread::sleep(Duration::from_millis(2));
+        };
+        assert_eq!(preview.coverage, full_coverage, "coverage at σ={sigma}");
+        assert_eq!(
+            preview.image,
+            bounded_preview(&full),
+            "float result at σ={sigma}"
+        );
+        assert_eq!(preview.image.width, 1600);
+        assert_eq!(preview.image.height, 25);
+        let display = to_display_rgba8(&preview.image);
+        assert_eq!(display.bytes, preview.display.bytes);
+        for y in 0..preview.image.height {
+            let sy = (y as u64 * height as u64 / preview.image.height as u64) as u32;
+            for x in 0..preview.image.width {
+                let sx = (x as u64 * width as u64 / preview.image.width as u64) as u32;
+                let preview_offset = ((y * preview.image.width + x) * 4) as usize;
+                assert_eq!(
+                    &preview.display.bytes[preview_offset..preview_offset + 4],
+                    exported.get_pixel(sx, sy).0.as_slice(),
+                    "PNG8 preview/export mismatch at σ={sigma}, ({x}, {y})"
+                );
+            }
+        }
+        if sigma == 25.0 {
+            let (initial_preview, initial_coverage) =
+                process_preview_cancellable_with_progress_and_coverage(
+                    &source,
+                    &recipe,
+                    1,
+                    &generation,
+                    |_| {},
+                )
+                .unwrap();
+            assert_eq!(initial_preview, preview.image);
+            assert_eq!(initial_coverage, preview.coverage);
+        }
+    }
+}
+
+#[test]
+#[ignore = "requires source, saved project, and PNG8 paths from the native workflow run"]
+fn verify_native_workflow_source_project_export_artifacts() {
+    let source_path = std::env::var_os("CHROMIATOR_WORKFLOW_SOURCE")
+        .expect("set CHROMIATOR_WORKFLOW_SOURCE to the imported raster path");
+    let project_path = std::env::var_os("CHROMIATOR_WORKFLOW_PROJECT")
+        .expect("set CHROMIATOR_WORKFLOW_PROJECT to the saved .chromiator path");
+    let export_path = std::env::var_os("CHROMIATOR_WORKFLOW_EXPORT")
+        .expect("set CHROMIATOR_WORKFLOW_EXPORT to the native PNG8 export path");
+
+    let source_bytes = fs::read(source_path).unwrap();
+    let reopened = project::open(Path::new(&project_path)).unwrap();
+    assert_eq!(reopened.source_bytes.as_ref(), source_bytes.as_slice());
+    assert!(!reopened.recipe.voronoi.sites.is_empty());
+
+    let full = process(&reopened.source, &reopened.recipe);
+    let expected = to_display_rgba8(&full);
+    let exported = image::open(export_path).unwrap().to_rgba8();
+    assert_eq!(exported.dimensions(), (full.width, full.height));
+    assert_eq!(exported.as_raw(), &expected.bytes);
+
+    let preview = to_display_rgba8(&bounded_preview(&full));
+    for y in 0..preview.height {
+        let source_y = (y as u64 * full.height as u64 / preview.height as u64) as u32;
+        for x in 0..preview.width {
+            let source_x = (x as u64 * full.width as u64 / preview.width as u64) as u32;
+            let preview_offset = ((y * preview.width + x) * 4) as usize;
+            assert_eq!(
+                &preview.bytes[preview_offset..preview_offset + 4],
+                exported.get_pixel(source_x, source_y).0.as_slice(),
+                "saved-project preview/export mismatch at ({x}, {y})"
+            );
+        }
+    }
+    eprintln!(
+        "native workflow artifacts verified: {}x{}, {} sites, sigma {}, exact source/project/export/preview parity",
+        full.width,
+        full.height,
+        reopened.recipe.voronoi.sites.len(),
+        reopened.recipe.preprocessing.input_smoothing
+    );
+}
+
+fn release_readiness_source(width: u32, height: u32) -> chromiator::document::PixelImage {
+    let shades = [
+        [0.08, 0.20, 0.75],
+        [0.78, 0.14, 0.06],
+        [0.08, 0.62, 0.22],
+        [0.93, 0.72, 0.14],
+    ]
+    .map(|color| color.map(srgb_to_linear));
+    let mut pixels = Vec::with_capacity(width as usize * height as usize);
+    for y in 0..height {
+        for x in 0..width {
+            let color = if x % 257 == 0 || y % 193 == 0 {
+                shades[3]
+            } else if x < width / 3 {
+                shades[0]
+            } else if x < width * 2 / 3 {
+                shades[1]
+            } else {
+                shades[2]
+            };
+            let alpha = if (x + y * 7) % 113 == 0 {
+                0.0
+            } else if (x + y * 11) % 29 == 0 {
+                0.35
+            } else {
+                1.0
+            };
+            pixels.push([color[0], color[1], color[2], alpha]);
+        }
+    }
+    chromiator::document::PixelImage::new(width, height, pixels).unwrap()
+}
+
+fn release_readiness_recipe(sigma: f32) -> Recipe {
+    let source_colors = [[0.08, 0.20, 0.75], [0.78, 0.14, 0.06], [0.08, 0.62, 0.22]]
+        .map(|color| color.map(srgb_to_linear));
+    let mut recipe = Recipe::default();
+    recipe.preprocessing.input_smoothing = sigma;
+    recipe.set_hue_degrees(17.0);
+    recipe.voronoi.sites = vec![
+        sample(1, source_colors[0], [0.08, 0.14, 0.94], 0.0),
+        sample(2, source_colors[1], [0.95, 0.18, 0.11], 0.0),
+        sample(3, source_colors[2], [0.12, 0.82, 0.28], 0.0),
+    ];
+    recipe.voronoi.next_site_id = 4;
+    recipe
+}
+
+fn assert_release_test_executable() {
+    let executable = std::env::current_exe().expect("test executable path");
+    assert!(
+        executable
+            .components()
+            .any(|component| component.as_os_str() == "release"),
+        "run this benchmark with --release"
+    );
+}
+
+#[test]
+#[ignore = "release-only 2MP/8MP responsiveness, parity, and cancellation measurements"]
+fn release_large_image_preview_export_and_cancellation_benchmark() {
+    assert_release_test_executable();
+    use std::sync::atomic::Ordering;
+
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("target/validation/release-readiness-20261007/large-image-benchmark");
+    fs::create_dir_all(&root).unwrap();
+    let metrics_path = root.join("metrics.jsonl");
+    let mut metrics = fs::File::create(&metrics_path).unwrap();
+
+    for (width, height) in [(2048_u32, 1024_u32), (4096, 2048)] {
+        let source = release_readiness_source(width, height);
+        let source_bytes = source.pixels.len() * std::mem::size_of::<[f32; 4]>();
+        for sigma in [0.0, 10.0, 11.0, 25.0, MAX_INPUT_SMOOTHING_SIGMA] {
+            let recipe = release_readiness_recipe(sigma);
+            let generation = AtomicU64::new(1);
+
+            let preview_started = Instant::now();
+            let (preview, preview_coverage) =
+                process_preview_cancellable_with_progress_and_coverage(
+                    &source,
+                    &recipe,
+                    1,
+                    &generation,
+                    |_| {},
+                )
+                .unwrap();
+            let preview_ms = preview_started.elapsed().as_secs_f64() * 1000.0;
+
+            let process_started = Instant::now();
+            let (full, full_coverage) = process_cancellable_with_progress_and_coverage(
+                &source,
+                &recipe,
+                1,
+                &generation,
+                |_| {},
+            )
+            .unwrap();
+            let process_ms = process_started.elapsed().as_secs_f64() * 1000.0;
+            assert_eq!(preview_coverage, full_coverage);
+            assert_eq!(preview, bounded_preview(&full));
+
+            let export_path = root.join(format!("{width}x{height}-sigma-{sigma}.png"));
+            let export_started = Instant::now();
+            export::export(&export_path, &full, ExportFormat::Png8).unwrap();
+            let export_ms = export_started.elapsed().as_secs_f64() * 1000.0;
+            let exported = image::open(&export_path).unwrap().to_rgba8();
+            assert_eq!(exported.dimensions(), (width, height));
+            let displayed_preview = to_display_rgba8(&preview);
+            for y in 0..preview.height {
+                let source_y = (y as u64 * height as u64 / preview.height as u64) as u32;
+                for x in 0..preview.width {
+                    let source_x = (x as u64 * width as u64 / preview.width as u64) as u32;
+                    let offset = ((y * preview.width + x) * 4) as usize;
+                    assert_eq!(
+                        &displayed_preview.bytes[offset..offset + 4],
+                        exported.get_pixel(source_x, source_y).0.as_slice(),
+                        "PNG8 export/preview mismatch at {width}x{height}, sigma {sigma}, ({x}, {y})"
+                    );
+                }
+            }
+
+            let metrics_line = serde_json::json!({
+                "kind": "render",
+                "width": width,
+                "height": height,
+                "pixels": width as u64 * height as u64,
+                "sigma_source_px": sigma,
+                "preview_process_and_downsample_ms": preview_ms,
+                "full_process_ms": process_ms,
+                "png8_atomic_export_ms": export_ms,
+                "source_rgba_f32_bytes": source_bytes,
+                "preview_width": preview.width,
+                "preview_height": preview.height,
+                "preview_float_bytes": preview.pixels.len() * std::mem::size_of::<[f32; 4]>(),
+                "parity": "exact float preview/full downsample and PNG8 preview/export samples"
+            });
+            writeln!(metrics, "{metrics_line}").unwrap();
+            eprintln!("{metrics_line}");
+            fs::remove_file(export_path).unwrap();
+        }
+
+        let current = Arc::new(AtomicU64::new(1));
+        let progress_bits = Arc::new(AtomicU64::new(0.0_f64.to_bits()));
+        let worker_current = Arc::clone(&current);
+        let worker_progress_bits = Arc::clone(&progress_bits);
+        let recipe = release_readiness_recipe(MAX_INPUT_SMOOTHING_SIGMA);
+        let worker_source = source.clone();
+        let worker = std::thread::spawn(move || {
+            process_cancellable_with_progress_and_coverage(
+                &worker_source,
+                &recipe,
+                1,
+                &worker_current,
+                |fraction| worker_progress_bits.store(fraction.to_bits(), Ordering::Release),
+            )
+        });
+        let wait_started = Instant::now();
+        let cancel_started = loop {
+            let fraction = f64::from_bits(progress_bits.load(Ordering::Acquire));
+            if fraction >= 0.02 {
+                let started = Instant::now();
+                current.store(2, Ordering::Release);
+                break started;
+            }
+            assert!(
+                wait_started.elapsed() < Duration::from_secs(60),
+                "cancellable 10000px sigma render did not report progress"
+            );
+            std::thread::yield_now();
+        };
+        assert!(worker.join().unwrap().is_none());
+        let cancellation_ms = cancel_started.elapsed().as_secs_f64() * 1000.0;
+        let metrics_line = serde_json::json!({
+            "kind": "cancel",
+            "width": width,
+            "height": height,
+            "pixels": width as u64 * height as u64,
+            "sigma_source_px": MAX_INPUT_SMOOTHING_SIGMA,
+            "progress_at_cancel": f64::from_bits(progress_bits.load(Ordering::Acquire)),
+            "cancel_to_worker_exit_ms": cancellation_ms
+        });
+        writeln!(metrics, "{metrics_line}").unwrap();
+        eprintln!("{metrics_line}");
+    }
+    eprintln!("release benchmark metrics: {}", metrics_path.display());
+}
+
+#[test]
+#[ignore = "run once per CHROMIATOR_BENCH_CASE under /usr/bin/time -v for isolated peak RSS"]
+fn release_large_image_case_peak_rss() {
+    assert_release_test_executable();
+    let case = std::env::var("CHROMIATOR_BENCH_CASE")
+        .expect("set CHROMIATOR_BENCH_CASE to WIDTHxHEIGHT@SIGMA");
+    let (dimensions, sigma) = case
+        .split_once('@')
+        .expect("case format WIDTHxHEIGHT@SIGMA");
+    let (width, height) = dimensions
+        .split_once('x')
+        .expect("case format WIDTHxHEIGHT@SIGMA");
+    let width = width.parse::<u32>().unwrap();
+    let height = height.parse::<u32>().unwrap();
+    let sigma = sigma.parse::<f32>().unwrap();
+    assert_eq!((width, height), (4096, 2048));
+    assert!(sigma == 11.0 || sigma == 25.0);
+
+    let source = release_readiness_source(width, height);
+    let recipe = release_readiness_recipe(sigma);
+    let generation = AtomicU64::new(1);
+    let preview_started = Instant::now();
+    let (preview, preview_coverage) = process_preview_cancellable_with_progress_and_coverage(
+        &source,
+        &recipe,
+        1,
+        &generation,
+        |_| {},
+    )
+    .unwrap();
+    let preview_ms = preview_started.elapsed().as_secs_f64() * 1000.0;
+    let process_started = Instant::now();
+    let (full, full_coverage) =
+        process_cancellable_with_progress_and_coverage(&source, &recipe, 1, &generation, |_| {})
+            .unwrap();
+    let process_ms = process_started.elapsed().as_secs_f64() * 1000.0;
+    assert_eq!(preview_coverage, full_coverage);
+    assert_eq!(preview, bounded_preview(&full));
+
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("target/validation/release-readiness-20261007/large-image-benchmark");
+    fs::create_dir_all(&root).unwrap();
+    let export_path = root.join(format!("isolated-{case}.png"));
+    let export_started = Instant::now();
+    export::export(&export_path, &full, ExportFormat::Png8).unwrap();
+    let export_ms = export_started.elapsed().as_secs_f64() * 1000.0;
+    let exported = image::open(&export_path).unwrap().to_rgba8();
+    let displayed_preview = to_display_rgba8(&preview);
+    for y in 0..preview.height {
+        let source_y = (y as u64 * height as u64 / preview.height as u64) as u32;
+        for x in 0..preview.width {
+            let source_x = (x as u64 * width as u64 / preview.width as u64) as u32;
+            let offset = ((y * preview.width + x) * 4) as usize;
+            assert_eq!(
+                &displayed_preview.bytes[offset..offset + 4],
+                exported.get_pixel(source_x, source_y).0.as_slice()
+            );
+        }
+    }
+    eprintln!(
+        "isolated case {case}: preview={preview_ms:.2}ms process={process_ms:.2}ms export={export_ms:.2}ms; exact preview/export parity"
+    );
+    fs::remove_file(export_path).unwrap();
+}
+
+#[test]
+#[ignore = "release-only in-flight 8MP cancellation followed by a small latest render"]
+fn release_8mp_latest_request_supersedes_running_smoothing_job() {
+    assert_release_test_executable();
+    use std::sync::atomic::Ordering;
+
+    let current = Arc::new(AtomicU64::new(1));
+    let progress_bits = Arc::new(AtomicU64::new(0.0_f64.to_bits()));
+    let worker_current = Arc::clone(&current);
+    let worker_progress_bits = Arc::clone(&progress_bits);
+    let source = release_readiness_source(4096, 2048);
+    let recipe = release_readiness_recipe(MAX_INPUT_SMOOTHING_SIGMA);
+    let worker_source = source.clone();
+    let worker = std::thread::spawn(move || {
+        process_preview_cancellable_with_progress_and_coverage(
+            &worker_source,
+            &recipe,
+            1,
+            &worker_current,
+            |fraction| worker_progress_bits.store(fraction.to_bits(), Ordering::Release),
+        )
+    });
+
+    let wait_started = Instant::now();
+    loop {
+        if f64::from_bits(progress_bits.load(Ordering::Acquire)) >= 0.02 {
+            break;
+        }
+        assert!(
+            wait_started.elapsed() < Duration::from_secs(60),
+            "8MP preview did not report progress"
+        );
+        std::thread::yield_now();
+    }
+
+    let latest_recipe = release_readiness_recipe(0.0);
+    let latest_source = release_readiness_source(512, 256);
+    let replacement_started = Instant::now();
+    current.store(2, Ordering::Release);
+    let latest = process_preview_cancellable_with_progress_and_coverage(
+        &latest_source,
+        &latest_recipe,
+        2,
+        &current,
+        |_| {},
+    )
+    .unwrap();
+    assert!(
+        worker.join().unwrap().is_none(),
+        "superseded 8MP work must cancel"
+    );
+    assert_eq!((latest.0.width, latest.0.height), (512, 256));
+    assert!(latest.1.visible_total > 0);
+    eprintln!(
+        "8MP sigma-10000 supersession: cancel at {:.4} progress; latest 512x256 result ready in {:.2}ms",
+        f64::from_bits(progress_bits.load(Ordering::Acquire)),
+        replacement_started.elapsed().as_secs_f64() * 1000.0
+    );
+}
+
+#[test]
+#[ignore = "writes the source, project, full export, and bounded preview under target/validation"]
+fn write_source_sigma_visual_fixture() {
+    let root = std::path::Path::new("target/validation/source-sigma-parity");
+    fs::create_dir_all(root).unwrap();
+    let width = 2048_u32;
+    let height = 512_u32;
+    let source_image = ImageBuffer::from_fn(width, height, |x, y| {
+        let mut rgb = if x < 682 {
+            [31_u8, 68, 126]
+        } else if x < 1365 {
+            [184, 61, 35]
+        } else {
+            [29, 132, 78]
+        };
+        if x == 682 || x == 1365 || y == 256 {
+            rgb = [241, 190, 54];
+        }
+        if (208..220).contains(&x) && (102..116).contains(&y) {
+            rgb = [250, 247, 231];
+        }
+        if (992..1008).contains(&x) && (304..320).contains(&y) {
+            rgb = [21, 202, 214];
+        }
+        if (1800..1816).contains(&x) && (128..144).contains(&y) {
+            rgb = [190, 42, 180];
+        }
+        let alpha = if x >= 2010 {
+            (((2048 - x) * 255) / 38) as u8
+        } else if (900..944).contains(&x) && (34..76).contains(&y) {
+            96
+        } else {
+            255
+        };
+        Rgba([rgb[0], rgb[1], rgb[2], alpha])
+    });
+    let mut source_bytes = Vec::new();
+    DynamicImage::ImageRgba8(source_image)
+        .write_to(&mut Cursor::new(&mut source_bytes), ImageFormat::Png)
+        .unwrap();
+    let source_path = root.join("source.png");
+    fs::write(&source_path, &source_bytes).unwrap();
+
+    let decoded = raster::decode(&source_bytes, Some(&source_path)).unwrap();
+    let make_site = |id: u64, encoded: [u8; 3], position: [f64; 2]| {
+        let color = encoded.map(|channel| srgb_to_linear(f32::from(channel) / 255.0));
+        VoronoiSite {
+            id,
+            order: id,
+            source_color: [color[0], color[1], color[2], 1.0],
+            target_color: color,
+            influence: 0.0,
+            locked: false,
+            position: Some(position),
+            size: SampleSize::Point,
+        }
+    };
+    let mut recipe = Recipe::default();
+    recipe.preprocessing.input_smoothing = 25.0;
+    recipe.voronoi.sites = vec![
+        make_site(1, [31, 68, 126], [0.17, 0.5]),
+        make_site(2, [184, 61, 35], [0.5, 0.5]),
+        make_site(3, [29, 132, 78], [0.83, 0.5]),
+        make_site(4, [250, 247, 231], [0.105, 0.21]),
+        make_site(5, [21, 202, 214], [0.488, 0.61]),
+        make_site(6, [190, 42, 180], [0.882, 0.27]),
+    ];
+    recipe.voronoi.next_site_id = 7;
+    let document = Document {
+        source_name: source_path.file_name().unwrap().to_string_lossy().into_owned(),
+        source_bytes: source_bytes.clone().into(),
+        source: decoded.pixels,
+        interpretation: decoded.interpretation,
+        recipe,
+        export_defaults: ExportDefaults::default(),
+        dirty: false,
+    };
+    let project_path = root.join("sigma-25-identity.chromiator");
+    project::save(&project_path, &document).unwrap();
+    let export_path = root.join("sigma-25-full-export.png");
+    export::export_recipe(
+        &export_path,
+        &document.source,
+        &document.recipe,
+        ExportFormat::Png8,
+    )
+    .unwrap();
+    let generation = AtomicU64::new(1);
+    let (preview, coverage) = process_preview_cancellable_with_progress_and_coverage(
+        &document.source,
+        &document.recipe,
+        1,
+        &generation,
+        |_| {},
+    )
+    .unwrap();
+    let preview_display = to_display_rgba8(&preview);
+    let preview_path = root.join("sigma-25-bounded-preview.png");
+    image::save_buffer_with_format(
+        &preview_path,
+        &preview_display.bytes,
+        preview_display.width,
+        preview_display.height,
+        image::ColorType::Rgba8,
+        ImageFormat::Png,
+    )
+    .unwrap();
+    let source_preview = bounded_preview(&document.source);
+    let source_display = to_display_rgba8(&source_preview);
+    let source_preview_path = root.join("source-bounded-preview.png");
+    image::save_buffer_with_format(
+        &source_preview_path,
+        &source_display.bytes,
+        source_display.width,
+        source_display.height,
+        image::ColorType::Rgba8,
+        ImageFormat::Png,
+    )
+    .unwrap();
+    fs::write(
+        root.join("fixture.json"),
+        serde_json::to_vec_pretty(&serde_json::json!({
+            "source": source_path,
+            "project": project_path,
+            "full_resolution_png8_export": export_path,
+            "bounded_preview_png8": preview_path,
+            "bounded_source_view_png8": source_preview_path,
+            "source_dimensions": [width, height],
+            "result_dimensions": [preview.width, preview.height],
+            "sigma_source_pixels": 25.0,
+            "coverage_visible": coverage.visible_total,
+            "sites": document.recipe.voronoi.sites,
+        }))
+        .unwrap(),
+    )
+    .unwrap();
 }
 
 #[test]
@@ -1502,6 +2577,309 @@ fn auto_sites_are_deterministic_representative_and_ignore_rare_noise() {
     );
 }
 
+fn auto_palette_pixel_at_oklab(lab: [f64; 3]) -> [f32; 4] {
+    let rgb = oklab_to_linear(lab);
+    assert!(
+        rgb.iter().all(|value| (0.0..=1.0).contains(value)),
+        "out of gamut: {lab:?} -> {rgb:?}"
+    );
+    [rgb[0] as f32, rgb[1] as f32, rgb[2] as f32, 1.0]
+}
+
+fn auto_palette_test_voxel(pixel: [f32; 4]) -> [usize; 3] {
+    let lab = linear_rgb_to_oklab([pixel[0], pixel[1], pixel[2]]);
+    std::array::from_fn(|axis| {
+        ((lab[axis] - if axis == 0 { 0.0 } else { -0.5 }) / 0.025)
+            .floor()
+            .clamp(0.0, 39.0) as usize
+    })
+}
+
+#[test]
+fn auto_sites_merge_nearby_shades_and_keep_small_distinct_accents() {
+    let shades = [[132, 94, 67], [137, 98, 70], [142, 102, 73]];
+    let linear = |rgb: [u8; 3]| {
+        let linear = encoded_to_linear(rgb.map(|channel| channel as f64 / 255.0));
+        [linear[0] as f32, linear[1] as f32, linear[2] as f32, 1.0]
+    };
+    let mut pixels = Vec::with_capacity(10_000);
+    for shade in shades {
+        pixels.extend(std::iter::repeat_n(linear(shade), 3306));
+    }
+    let white = linear([255, 255, 255]);
+    let cyan = linear([0, 205, 255]);
+    let noise = linear([255, 0, 255]);
+    let mut transparent = linear([255, 20, 20]);
+    transparent[3] = 0.0;
+    pixels.extend(std::iter::repeat_n(white, 40));
+    pixels.extend(std::iter::repeat_n(cyan, 40));
+    pixels.push(noise);
+    pixels.push(transparent);
+    let image = chromiator::document::PixelImage::new(100, 100, pixels).unwrap();
+
+    let sites = auto_initialize(&image, &image);
+    assert_eq!(sites, auto_initialize(&image, &image));
+    assert_eq!(sites.sites.len(), 3);
+    assert!(sites.sites.iter().any(|site| {
+        shades
+            .iter()
+            .any(|shade| site.source_color == linear(*shade))
+    }));
+    assert!(sites.sites.iter().any(|site| site.source_color == white));
+    assert!(sites.sites.iter().any(|site| site.source_color == cyan));
+    assert!(!sites.sites.iter().any(|site| site.source_color == noise));
+    assert!(
+        !sites
+            .sites
+            .iter()
+            .any(|site| site.source_color == transparent)
+    );
+    for site in &sites.sites {
+        assert!(image.pixels.contains(&site.source_color));
+        assert_eq!(site.target_color, site.source_color[..3]);
+        assert_eq!(site.size, SampleSize::Point);
+        assert_eq!(
+            sample_color(&image, site.position.unwrap(), SampleSize::Point),
+            Some(site.source_color)
+        );
+    }
+}
+
+#[test]
+fn auto_sites_admit_a_compact_accent_across_low_support_voxels() {
+    let main = auto_palette_pixel_at_oklab([0.42, 0.08, 0.04]);
+    let accent_center = [0.78, -0.04, 0.02];
+    let mut accent = Vec::new();
+    for dl in [-0.025, 0.0, 0.025] {
+        for da in [-0.025, 0.0, 0.025] {
+            for db in [-0.025, 0.0, 0.025] {
+                accent.push(auto_palette_pixel_at_oklab([
+                    accent_center[0] + dl,
+                    accent_center[1] + da,
+                    accent_center[2] + db,
+                ]));
+            }
+        }
+    }
+    let bins: std::collections::BTreeMap<_, usize> = accent
+        .iter()
+        .map(|&pixel| auto_palette_test_voxel(pixel))
+        .fold(std::collections::BTreeMap::new(), |mut bins, voxel| {
+            *bins.entry(voxel).or_default() += 2;
+            bins
+        });
+    assert_eq!(bins.len(), 27);
+    assert!(bins.values().all(|&support| support <= 2));
+
+    let mut pixels = vec![main; 2_000];
+    for color in &accent {
+        pixels.extend([*color; 2]);
+    }
+    let image = chromiator::document::PixelImage::new(pixels.len() as u32, 1, pixels).unwrap();
+    let sites = auto_initialize(&image, &image);
+
+    assert!(sites.sites.iter().any(|site| site.source_color == main));
+    assert!(
+        sites
+            .sites
+            .iter()
+            .any(|site| accent.contains(&site.source_color))
+    );
+    assert!(
+        sites
+            .sites
+            .iter()
+            .all(|site| image.pixels.contains(&site.source_color))
+    );
+}
+
+#[test]
+fn auto_palette_density_rejects_diffuse_tail_across_grid_phases() {
+    let main = auto_palette_pixel_at_oklab([0.42, 0.08, 0.04]);
+    let compact_accent = auto_palette_pixel_at_oklab([0.84, -0.12, 0.06]);
+    for phase in [0.04, 0.92] {
+        let mut diffuse = Vec::new();
+        for li in 24..30 {
+            for ai in 18..24 {
+                for bi in 18..24 {
+                    diffuse.push(auto_palette_pixel_at_oklab([
+                        (li as f64 + phase) * 0.025,
+                        -0.5 + (ai as f64 + phase) * 0.025,
+                        -0.5 + (bi as f64 + phase) * 0.025,
+                    ]));
+                }
+            }
+        }
+        let mut bins = std::collections::BTreeMap::new();
+        for &pixel in &diffuse {
+            *bins.entry(auto_palette_test_voxel(pixel)).or_insert(0usize) += 4;
+        }
+        assert_eq!(bins.len(), 216);
+        assert!(bins.values().all(|&support| support > 2));
+
+        let mut pixels = vec![main; 10_000];
+        pixels.extend(diffuse.iter().flat_map(|&pixel| [pixel; 4]));
+        pixels.extend(std::iter::repeat_n(compact_accent, diffuse.len() * 4));
+        let image = chromiator::document::PixelImage::new(pixels.len() as u32, 1, pixels).unwrap();
+        let sites = auto_initialize(&image, &image);
+
+        assert!(sites.sites.iter().any(|site| site.source_color == main));
+        assert!(
+            sites
+                .sites
+                .iter()
+                .any(|site| site.source_color == compact_accent)
+        );
+        assert!(
+            sites
+                .sites
+                .iter()
+                .all(|site| !diffuse.contains(&site.source_color))
+        );
+    }
+}
+
+#[test]
+fn auto_palette_density_collapses_flat_plateau_and_uses_gradient_fallback() {
+    let flat =
+        chromiator::document::PixelImage::new(512, 1, vec![[0.28, 0.16, 0.07, 1.0]; 512]).unwrap();
+    assert_eq!(auto_initialize(&flat, &flat).sites.len(), 1);
+
+    let pixels: Vec<_> = (0..=255)
+        .map(|index| {
+            let value = index as f32 / 255.0;
+            [value, value, value, 1.0]
+        })
+        .collect();
+    let gradient = chromiator::document::PixelImage::new(256, 1, pixels).unwrap();
+    let sites = auto_initialize(&gradient, &gradient);
+    assert!((2..=6).contains(&sites.sites.len()));
+    let darkest_site = sites
+        .sites
+        .iter()
+        .map(|site| site.source_color[0])
+        .fold(f32::INFINITY, f32::min);
+    let lightest_site = sites
+        .sites
+        .iter()
+        .map(|site| site.source_color[0])
+        .fold(f32::NEG_INFINITY, f32::max);
+    assert!(darkest_site < 0.2 && lightest_site > 0.8 && lightest_site - darkest_site > 0.6);
+    assert!(sites.sites.iter().all(|site| {
+        gradient.pixels.contains(&site.source_color) && site.target_color == site.source_color[..3]
+    }));
+}
+
+#[test]
+#[ignore = "writes the local automatic-palette visual evidence artifact"]
+fn generate_auto_palette_diversity_processed_artifact() {
+    let root = Path::new("target/validation/auto-palette-diversity");
+    let source_bytes = fs::read(root.join("source.png")).unwrap();
+    let source = raster::decode(&source_bytes, None).unwrap().pixels;
+    let recipe = Recipe {
+        voronoi: auto_initialize(&source, &source),
+        ..Recipe::default()
+    };
+    assert_eq!(recipe.voronoi.sites.len(), 3);
+
+    let identity = root.join("after-identity.png");
+    export::export_recipe(&identity, &source, &recipe, ExportFormat::Png8).unwrap();
+    let identity_sidecar = serde_json::json!({
+        "source": "source.png",
+        "rendered": "after-identity.png",
+        "dimensions": [source.width, source.height],
+        "sites": &recipe.voronoi.sites,
+        "note": "Initial palette with identity Targets, rendered by Chromiator export::export_recipe."
+    });
+    fs::write(
+        root.join("after-identity.png.json"),
+        serde_json::to_vec_pretty(&identity_sidecar).unwrap(),
+    )
+    .unwrap();
+
+    let mut diagnostic_recipe = recipe.clone();
+    for site in &mut diagnostic_recipe.voronoi.sites {
+        let [red, green, blue, _alpha] = site.source_color;
+        site.target_color = if red > 0.9 && green > 0.9 && blue > 0.9 {
+            [0.0, 1.0, 0.0]
+        } else if green > red && blue > red {
+            [1.0, 0.0, 0.0]
+        } else {
+            [0.0, 0.0, 1.0]
+        };
+    }
+
+    let diagnostic = root.join("diagnostic-recolored.png");
+    export::export_recipe(&diagnostic, &source, &diagnostic_recipe, ExportFormat::Png8).unwrap();
+    let sidecar = serde_json::json!({
+        "source": "source.png",
+        "rendered": "diagnostic-recolored.png",
+        "dimensions": [source.width, source.height],
+        "sites": &diagnostic_recipe.voronoi.sites,
+        "mapping": {
+            "dominant_shade_family": "blue",
+            "white_highlight": "green",
+            "cyan_accent": "red"
+        },
+        "note": "Diagnostic recolor with artificial Target colors; not the default initial result."
+    });
+    fs::write(
+        root.join("diagnostic-recolored.png.json"),
+        serde_json::to_vec_pretty(&sidecar).unwrap(),
+    )
+    .unwrap();
+}
+
+#[test]
+fn auto_sites_use_six_as_a_cap_and_do_not_pad_small_palettes() {
+    let distinct = [
+        [0.0, 0.0, 0.0, 1.0],
+        [1.0, 1.0, 1.0, 1.0],
+        [1.0, 0.0, 0.0, 1.0],
+        [0.0, 1.0, 0.0, 1.0],
+        [0.0, 0.0, 1.0, 1.0],
+        [1.0, 1.0, 0.0, 1.0],
+        [1.0, 0.0, 1.0, 1.0],
+    ];
+    let pixels: Vec<_> = distinct
+        .into_iter()
+        .flat_map(|color| std::iter::repeat_n(color, 10))
+        .collect();
+    let image = chromiator::document::PixelImage::new(70, 1, pixels).unwrap();
+    assert_eq!(auto_initialize(&image, &image).sites.len(), 6);
+
+    let mut two_color_pixels = vec![[0.12, 0.22, 0.32, 1.0]; 40];
+    two_color_pixels.extend(vec![[0.82, 0.62, 0.22, 1.0]; 40]);
+    let two_colors = chromiator::document::PixelImage::new(80, 1, two_color_pixels).unwrap();
+    assert_eq!(auto_initialize(&two_colors, &two_colors).sites.len(), 2);
+}
+
+#[test]
+fn auto_site_coalescing_does_not_collapse_a_chain_of_distinct_gray_tones() {
+    let tones = [0.14_f32, 0.166, 0.195];
+    let pixels: Vec<_> = [200, 100, 200]
+        .into_iter()
+        .zip(tones)
+        .flat_map(|(count, value)| std::iter::repeat_n([value, value, value, 1.0], count))
+        .collect();
+    let image = chromiator::document::PixelImage::new(500, 1, pixels).unwrap();
+    let sites = auto_initialize(&image, &image);
+
+    assert_eq!(sites.sites.len(), 2);
+    assert!(
+        sites
+            .sites
+            .iter()
+            .any(|site| site.source_color[0] == tones[0])
+    );
+    assert!(
+        sites
+            .sites
+            .iter()
+            .any(|site| site.source_color[0] == tones[2])
+    );
+}
+
 #[test]
 fn large_proxy_alpha_support_keeps_four_dominant_colors_not_noise() {
     let dominant = [
@@ -1814,6 +3192,35 @@ fn project_routing_and_extension_are_case_insensitive() {
     assert_eq!(
         ensure_project_extension(PathBuf::from("work.ChRoMiAtOr")),
         PathBuf::from("work.ChRoMiAtOr")
+    );
+}
+
+#[test]
+fn combined_open_intent_routes_projects_and_rasters_by_selected_path() {
+    let intent = OpenIntent::ImageOrProject;
+    assert_eq!(
+        intent.selected_kind(Path::new("Artwork.png")),
+        OpenKind::Image
+    );
+    assert_eq!(
+        intent.selected_kind(Path::new("Artwork.CHROMIATOR")),
+        OpenKind::Project
+    );
+    assert_eq!(
+        intent.selected_kind(Path::new("Artwork.ChRoMiAtOr")),
+        OpenKind::Project
+    );
+}
+
+#[test]
+fn image_only_open_intent_keeps_welcome_route_image_only() {
+    assert_eq!(
+        OpenIntent::Image.selected_kind(Path::new("Artwork.png")),
+        OpenKind::Image
+    );
+    assert_eq!(
+        OpenIntent::Image.selected_kind(Path::new("Artwork.chromiator")),
+        OpenKind::Image
     );
 }
 

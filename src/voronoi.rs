@@ -1,8 +1,56 @@
-use std::collections::BTreeMap;
-
 use crate::document::{PixelImage, SampleSize, VoronoiSite, VoronoiState};
 
 const DISTINCT_D2: f64 = 0.0025;
+const MAX_AUTO_SITES: usize = 6;
+const OKLAB_GRID_STEP: f64 = 0.025;
+const OKLAB_L_MIN: f64 = 0.0;
+const OKLAB_AB_MIN: f64 = -0.5;
+const OKLAB_GRID_SIZE: usize = 40;
+const OKLAB_GRID_CELLS: usize = OKLAB_GRID_SIZE * OKLAB_GRID_SIZE * OKLAB_GRID_SIZE;
+const DENSITY_CORE_RADIUS_CELLS: isize = 2;
+const DENSITY_SHELL_RADIUS_CELLS: isize = 4;
+const DENSITY_PROMINENCE: f64 = 1.5;
+
+#[derive(Clone, Copy)]
+struct VoxelAccum {
+    alpha: f64,
+    lab_sum: [f64; 3],
+    first_index: usize,
+}
+
+impl Default for VoxelAccum {
+    fn default() -> Self {
+        Self {
+            alpha: 0.0,
+            lab_sum: [0.0; 3],
+            first_index: usize::MAX,
+        }
+    }
+}
+
+struct ColorCandidate {
+    first_index: usize,
+    sample_index: usize,
+    lab: [f64; 3],
+    alpha: f64,
+    sample_distance2: f64,
+}
+
+struct ClusterFamily {
+    first_cluster: usize,
+    clusters: Vec<usize>,
+    center: [f64; 3],
+    support: f64,
+}
+
+#[derive(Clone)]
+struct PaletteCandidate {
+    stable_order: (usize, u8),
+    sample_index: usize,
+    swatch: [f32; 4],
+    swatch_lab: [f64; 3],
+    support: f64,
+}
 
 pub fn linear_rgb_to_oklab(rgb: [f32; 3]) -> [f64; 3] {
     let r = rgb[0] as f64;
@@ -20,6 +68,75 @@ pub fn linear_rgb_to_oklab(rgb: [f32; 3]) -> [f64; 3] {
 
 pub fn distance2(a: [f64; 3], b: [f64; 3]) -> f64 {
     (a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2) + (a[2] - b[2]).powi(2)
+}
+
+fn oklab_voxel_index(lab: [f64; 3]) -> usize {
+    let coordinate = |value: f64, minimum: f64| {
+        ((value - minimum) / OKLAB_GRID_STEP)
+            .floor()
+            .clamp(0.0, (OKLAB_GRID_SIZE - 1) as f64) as usize
+    };
+    let l = coordinate(lab[0], OKLAB_L_MIN);
+    let a = coordinate(lab[1], OKLAB_AB_MIN);
+    let b = coordinate(lab[2], OKLAB_AB_MIN);
+    (l * OKLAB_GRID_SIZE + a) * OKLAB_GRID_SIZE + b
+}
+
+fn oklab_voxel_coordinates(index: usize) -> [usize; 3] {
+    let b = index % OKLAB_GRID_SIZE;
+    let a = (index / OKLAB_GRID_SIZE) % OKLAB_GRID_SIZE;
+    let l = index / (OKLAB_GRID_SIZE * OKLAB_GRID_SIZE);
+    [l, a, b]
+}
+
+fn oklab_voxel_neighbor(coordinates: [usize; 3], offset: [isize; 3]) -> Option<usize> {
+    let mut neighbor = [0usize; 3];
+    for axis in 0..3 {
+        let value = coordinates[axis] as isize + offset[axis];
+        if !(0..OKLAB_GRID_SIZE as isize).contains(&value) {
+            return None;
+        }
+        neighbor[axis] = value as usize;
+    }
+    Some((neighbor[0] * OKLAB_GRID_SIZE + neighbor[1]) * OKLAB_GRID_SIZE + neighbor[2])
+}
+
+fn core_kernel_offsets() -> Vec<([isize; 3], f64)> {
+    let mut offsets = Vec::new();
+    for l in -DENSITY_CORE_RADIUS_CELLS..=DENSITY_CORE_RADIUS_CELLS {
+        for a in -DENSITY_CORE_RADIUS_CELLS..=DENSITY_CORE_RADIUS_CELLS {
+            for b in -DENSITY_CORE_RADIUS_CELLS..=DENSITY_CORE_RADIUS_CELLS {
+                let radius2 = l * l + a * a + b * b;
+                if radius2 <= DENSITY_CORE_RADIUS_CELLS * DENSITY_CORE_RADIUS_CELLS {
+                    // A bounded Gaussian kernel with sigma equal to one voxel. Its fixed
+                    // normalization includes empty cells and keeps peak density comparable.
+                    offsets.push(([l, a, b], (-0.5 * radius2 as f64).exp()));
+                }
+            }
+        }
+    }
+    offsets
+}
+
+fn shell_offsets() -> Vec<[isize; 3]> {
+    let mut offsets = Vec::new();
+    for l in -DENSITY_SHELL_RADIUS_CELLS..=DENSITY_SHELL_RADIUS_CELLS {
+        for a in -DENSITY_SHELL_RADIUS_CELLS..=DENSITY_SHELL_RADIUS_CELLS {
+            for b in -DENSITY_SHELL_RADIUS_CELLS..=DENSITY_SHELL_RADIUS_CELLS {
+                let radius2 = l * l + a * a + b * b;
+                if radius2 > DENSITY_CORE_RADIUS_CELLS * DENSITY_CORE_RADIUS_CELLS
+                    && radius2 <= DENSITY_SHELL_RADIUS_CELLS * DENSITY_SHELL_RADIUS_CELLS
+                {
+                    offsets.push([l, a, b]);
+                }
+            }
+        }
+    }
+    offsets
+}
+
+fn density_equal(a: f64, b: f64) -> bool {
+    (a - b).abs() <= 1.0e-12 * a.abs().max(b.abs()).max(1.0)
 }
 
 pub fn sample_color(image: &PixelImage, position: [f64; 2], size: SampleSize) -> Option<[f32; 4]> {
@@ -116,44 +233,72 @@ pub fn reattach_site(
 }
 
 pub fn auto_initialize(_proxy: &PixelImage, source: &PixelImage) -> VoronoiState {
-    // Build a bounded histogram from every full-resolution source pixel. The old implementation
-    // counted a nearest-neighbor preview, which could entirely miss one phase of a checkerboard
-    // or alternating scanline. Five bits per canonical linear-sRGB channel bounds the candidate
-    // set at 32,768 bins without inventing colors or changing the native OKLab distance metric.
-    let mut colors = BTreeMap::<u16, (usize, [f64; 3], f64)>::new();
+    // Accumulate the full-resolution image directly into fixed-volume OKLab voxels. The
+    // 40³ grid uses 0.025 units per axis over canonical sRGB OKLab bounds; unlike coarse
+    // linear-RGB bins, every cell represents the same perceptual volume.
+    let mut accum = vec![VoxelAccum::default(); OKLAB_GRID_CELLS];
     for (index, pixel) in source.pixels.iter().enumerate() {
         if pixel[3] <= 0.0 {
             continue;
         }
-        let quantize = |channel: f32| (channel.clamp(0.0, 1.0) * 31.0).round() as u16;
-        let key = (quantize(pixel[0]) << 10) | (quantize(pixel[1]) << 5) | quantize(pixel[2]);
         let lab = linear_rgb_to_oklab([pixel[0], pixel[1], pixel[2]]);
+        let voxel_index = oklab_voxel_index(lab);
+        let voxel = &mut accum[voxel_index];
         let alpha = pixel[3] as f64;
-        let entry = colors.entry(key).or_insert((index, [0.0; 3], 0.0));
-        entry.0 = entry.0.min(index);
-        for (sum, value) in entry.1.iter_mut().zip(lab) {
-            *sum += value * alpha;
+        voxel.alpha += alpha;
+        voxel.first_index = voxel.first_index.min(index);
+        for (sum, component) in voxel.lab_sum.iter_mut().zip(lab) {
+            *sum += component * alpha;
         }
-        entry.2 += alpha;
     }
-    let candidates: Vec<_> = colors
-        .into_values()
-        .map(|(index, mut lab_sum, alpha)| {
-            for component in &mut lab_sum {
-                *component /= alpha;
-            }
-            (index, lab_sum, alpha)
-        })
-        .collect();
+
+    let mut voxel_labs = vec![[0.0_f64; 3]; OKLAB_GRID_CELLS];
+    let mut candidate_by_voxel = vec![usize::MAX; OKLAB_GRID_CELLS];
+    let mut candidates = Vec::<ColorCandidate>::new();
+    for (voxel_index, voxel) in accum.iter().enumerate() {
+        if voxel.alpha <= 0.0 {
+            continue;
+        }
+        let lab = voxel.lab_sum.map(|sum| sum / voxel.alpha);
+        voxel_labs[voxel_index] = lab;
+        candidate_by_voxel[voxel_index] = candidates.len();
+        candidates.push(ColorCandidate {
+            first_index: voxel.first_index,
+            sample_index: voxel.first_index,
+            lab,
+            alpha: voxel.alpha,
+            sample_distance2: f64::INFINITY,
+        });
+    }
     let mut state = VoronoiState::default();
     if candidates.is_empty() {
         return state;
     }
-    let total_alpha: f64 = candidates.iter().map(|candidate| candidate.2).sum();
+
+    // Select a real source pixel nearest each occupied voxel's weighted OKLab center. This
+    // second bounded full-source pass replaces the former local 3×3 exact-color tie-break and
+    // keeps a one-pixel outlier from representing a much denser voxel.
+    for (index, pixel) in source.pixels.iter().enumerate() {
+        if pixel[3] <= 0.0 {
+            continue;
+        }
+        let lab = linear_rgb_to_oklab([pixel[0], pixel[1], pixel[2]]);
+        let candidate_index = candidate_by_voxel[oklab_voxel_index(lab)];
+        let candidate = &mut candidates[candidate_index];
+        let sample_distance2 = distance2(lab, candidate.lab);
+        let ordering = sample_distance2.total_cmp(&candidate.sample_distance2);
+        if ordering.is_lt() || (ordering.is_eq() && index < candidate.sample_index) {
+            candidate.sample_index = index;
+            candidate.sample_distance2 = sample_distance2;
+        }
+    }
+
+    let total_alpha: f64 = candidates.iter().map(|candidate| candidate.alpha).sum();
+    let minimum_support = if total_alpha > 64.0 { 2.0 } else { 0.0 };
     let mut global = [0.0_f64; 3];
-    for &(_, lab, alpha) in &candidates {
-        for component in 0..3 {
-            global[component] += lab[component] * alpha;
+    for candidate in &candidates {
+        for (sum, component) in global.iter_mut().zip(candidate.lab) {
+            *sum += component * candidate.alpha;
         }
     }
     for component in &mut global {
@@ -162,109 +307,150 @@ pub fn auto_initialize(_proxy: &PixelImage, source: &PixelImage) -> VoronoiState
     let first = candidates
         .iter()
         .min_by(|a, b| {
-            distance2(a.1, global)
-                .total_cmp(&distance2(b.1, global))
-                .then_with(|| a.0.cmp(&b.0))
+            distance2(a.lab, global)
+                .total_cmp(&distance2(b.lab, global))
+                .then_with(|| a.first_index.cmp(&b.first_index))
         })
         .expect("candidates are nonempty")
-        .1;
+        .lab;
     let mut centers = vec![first];
     while centers.len() < 8.min(candidates.len()) {
         let next = candidates
             .iter()
-            .map(|&(index, lab, alpha)| {
+            .map(|candidate| {
                 let nearest = centers
                     .iter()
-                    .map(|&center| distance2(lab, center))
+                    .map(|&center| distance2(candidate.lab, center))
                     .fold(f64::INFINITY, f64::min);
-                (index, nearest * alpha.sqrt())
+                (candidate.first_index, nearest * candidate.alpha.sqrt())
             })
             .max_by(|a, b| a.1.total_cmp(&b.1).then_with(|| b.0.cmp(&a.0)));
-        let Some((index, d2)) = next else { break };
-        if d2 < DISTINCT_D2 {
+        let Some((first_index, score)) = next else {
+            break;
+        };
+        if score < DISTINCT_D2 {
             break;
         }
         centers.push(
             candidates
                 .iter()
-                .find(|(candidate, _, _)| *candidate == index)
-                .unwrap()
-                .1,
+                .find(|candidate| candidate.first_index == first_index)
+                .expect("seed index belongs to a candidate")
+                .lab,
         );
     }
 
     let mut assignments = vec![0usize; candidates.len()];
-    let mut support = vec![0.0_f64; centers.len()];
+    let mut cluster_support = vec![0.0_f64; centers.len()];
     for _ in 0..12 {
-        support.fill(0.0);
+        cluster_support.fill(0.0);
         let mut sums = vec![[0.0_f64; 3]; centers.len()];
-        for (candidate_index, &(_, lab, alpha)) in candidates.iter().enumerate() {
-            let cluster = centers
-                .iter()
-                .enumerate()
-                .min_by(|(ia, a), (ib, b)| {
-                    distance2(lab, **a)
-                        .total_cmp(&distance2(lab, **b))
-                        .then_with(|| ia.cmp(ib))
-                })
-                .map(|(index, _)| index)
-                .unwrap_or(0);
+        for (candidate_index, candidate) in candidates.iter().enumerate() {
+            let cluster = nearest_center(candidate.lab, &centers);
             assignments[candidate_index] = cluster;
-            support[cluster] += alpha;
-            for component in 0..3 {
-                sums[cluster][component] += lab[component] * alpha;
+            cluster_support[cluster] += candidate.alpha;
+            for (sum, component) in sums[cluster].iter_mut().zip(candidate.lab) {
+                *sum += component * candidate.alpha;
             }
         }
         for (index, center) in centers.iter_mut().enumerate() {
-            if support[index] > 0.0 {
+            if cluster_support[index] > 0.0 {
                 for component in 0..3 {
-                    center[component] = sums[index][component] / support[index];
+                    center[component] = sums[index][component] / cluster_support[index];
+                }
+            }
+        }
+    }
+    cluster_support.fill(0.0);
+    for (candidate_index, candidate) in candidates.iter().enumerate() {
+        let cluster = nearest_center(candidate.lab, &centers);
+        assignments[candidate_index] = cluster;
+        cluster_support[cluster] += candidate.alpha;
+    }
+
+    // Coalesce nearby K-means centers with deterministic complete-link grouping. A whole family
+    // must stay within the 0.05 OKLab radius, so a gradual chain cannot merge distinct endpoints.
+    let mut families = Vec::<ClusterFamily>::new();
+    for cluster in 0..centers.len() {
+        let family_index = families.iter().position(|family| {
+            family
+                .clusters
+                .iter()
+                .all(|&other| distance2(centers[cluster], centers[other]) < DISTINCT_D2)
+        });
+        let family_index = family_index.unwrap_or_else(|| {
+            families.push(ClusterFamily {
+                first_cluster: cluster,
+                clusters: Vec::new(),
+                center: [0.0; 3],
+                support: 0.0,
+            });
+            families.len() - 1
+        });
+        families[family_index].clusters.push(cluster);
+    }
+    for family in &mut families {
+        family.support = family
+            .clusters
+            .iter()
+            .map(|&cluster| cluster_support[cluster])
+            .sum();
+        if family.support > 0.0 {
+            for &cluster in &family.clusters {
+                for (sum, component) in family.center.iter_mut().zip(centers[cluster]) {
+                    *sum += component * cluster_support[cluster] / family.support;
                 }
             }
         }
     }
 
-    // A cluster must own more than 0.5% of visible alpha. For nontrivial images,
-    // at least two fully opaque proxy pixels are required as an additional floor.
-    let minimum_support = if total_alpha > 64.0 {
-        (total_alpha * 0.005).max(2.0)
-    } else {
-        0.0
-    };
-    let mut retained: Vec<_> = support
+    let family_candidates: Vec<_> = families
+        .iter()
+        .filter_map(|family| {
+            family_palette_candidate(family, &candidates, &assignments, source, minimum_support)
+        })
+        .collect();
+    let Some(anchor_index) = family_candidates
         .iter()
         .enumerate()
-        .filter(|(_, value)| **value > minimum_support)
-        .map(|(index, value)| (index, *value))
-        .collect();
-    retained.sort_by(|a, b| b.1.total_cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
-    retained.truncate(4);
-    retained.sort_by_key(|(index, _)| *index);
-    let mut accepted = Vec::<[f64; 3]>::new();
-    for (cluster, _) in retained {
-        let center = centers[cluster];
-        if accepted
-            .iter()
-            .any(|&other| distance2(center, other) < DISTINCT_D2)
-        {
-            continue;
-        }
-        let Some((index, pixel)) = candidates
-            .iter()
-            .map(|(index, _, _)| (*index, &source.pixels[*index]))
-            .min_by(|(index_a, a), (index_b, b)| {
-                let da = distance2(linear_rgb_to_oklab([a[0], a[1], a[2]]), center);
-                let db = distance2(linear_rgb_to_oklab([b[0], b[1], b[2]]), center);
-                da.total_cmp(&db)
-                    .then_with(|| {
-                        local_same_color_support(source, *index_b)
-                            .total_cmp(&local_same_color_support(source, *index_a))
-                    })
-                    .then_with(|| index_a.cmp(index_b))
-            })
-        else {
-            continue;
-        };
+        .max_by(|(_, a), (_, b)| {
+            a.support
+                .total_cmp(&b.support)
+                .then_with(|| b.stable_order.cmp(&a.stable_order))
+        })
+        .map(|(index, _)| index)
+    else {
+        return state;
+    };
+    let density_modes = density_mode_candidates(
+        &accum,
+        &voxel_labs,
+        &candidate_by_voxel,
+        &candidates,
+        source,
+        minimum_support,
+    );
+
+    // Keep the strongest alpha family as the main-artwork anchor even when it is broad and has
+    // little local prominence. Add compact density modes as the remaining choices. If the image
+    // has no compact modes (for example, a smooth gradient), use the other coalesced families as
+    // a deterministic fallback instead of returning an empty or single-site palette.
+    let mut palette_candidates = vec![family_candidates[anchor_index].clone()];
+    if density_modes.is_empty() {
+        palette_candidates.extend(
+            family_candidates
+                .into_iter()
+                .enumerate()
+                .filter_map(|(index, candidate)| (index != anchor_index).then_some(candidate)),
+        );
+    } else {
+        palette_candidates.extend(density_modes);
+    }
+    let selected = select_palette_candidates(&palette_candidates);
+    for palette_index in selected {
+        let candidate = &palette_candidates[palette_index];
+        let index = candidate.sample_index;
+        let pixel = candidate.swatch;
         let x = index % source.width as usize;
         let y = index / source.width as usize;
         let position = [
@@ -284,38 +470,312 @@ pub fn auto_initialize(_proxy: &PixelImage, source: &PixelImage) -> VoronoiState
         state.sites.push(VoronoiSite {
             id: site_id,
             order: site_id,
-            source_color: *pixel,
+            source_color: pixel,
             target_color: [pixel[0], pixel[1], pixel[2]],
             influence: 0.0,
             locked: false,
             position: Some(position),
-            // Automatic sites represent colors actually observed in the distribution. A point
-            // sample prevents a high-frequency representative from becoming a synthetic local
-            // average immediately after selection.
             size: SampleSize::Point,
         });
-        accepted.push(center);
     }
     state
 }
 
-fn local_same_color_support(image: &PixelImage, index: usize) -> f64 {
-    let x = index % image.width as usize;
-    let y = index / image.width as usize;
-    let target = image.pixels[index];
-    let key = (
-        target[0].to_bits(),
-        target[1].to_bits(),
-        target[2].to_bits(),
-    );
-    let mut support = 0.0;
-    for yy in y.saturating_sub(1)..=(y + 1).min(image.height as usize - 1) {
-        for xx in x.saturating_sub(1)..=(x + 1).min(image.width as usize - 1) {
-            let pixel = image.pixels[yy * image.width as usize + xx];
-            if (pixel[0].to_bits(), pixel[1].to_bits(), pixel[2].to_bits()) == key {
-                support += pixel[3] as f64;
+fn nearest_center(lab: [f64; 3], centers: &[[f64; 3]]) -> usize {
+    centers
+        .iter()
+        .enumerate()
+        .min_by(|(ia, a), (ib, b)| {
+            distance2(lab, **a)
+                .total_cmp(&distance2(lab, **b))
+                .then_with(|| ia.cmp(ib))
+        })
+        .map(|(index, _)| index)
+        .unwrap_or(0)
+}
+
+fn family_palette_candidate(
+    family: &ClusterFamily,
+    candidates: &[ColorCandidate],
+    assignments: &[usize],
+    source: &PixelImage,
+    minimum_support: f64,
+) -> Option<PaletteCandidate> {
+    if family.support <= minimum_support {
+        return None;
+    }
+    let members: Vec<_> = candidates
+        .iter()
+        .enumerate()
+        .filter(|(index, _)| family.clusters.contains(&assignments[*index]))
+        .map(|(_, candidate)| candidate)
+        .collect();
+    let eligible: Vec<_> = members
+        .iter()
+        .copied()
+        .filter(|candidate| candidate.alpha > minimum_support)
+        .collect();
+    let sample = if eligible.is_empty() {
+        members.into_iter().max_by(|a, b| {
+            a.alpha
+                .total_cmp(&b.alpha)
+                .then_with(|| b.first_index.cmp(&a.first_index))
+        })
+    } else {
+        eligible.into_iter().min_by(|a, b| {
+            let a_pixel = source.pixels[a.sample_index];
+            let b_pixel = source.pixels[b.sample_index];
+            let a_lab = linear_rgb_to_oklab([a_pixel[0], a_pixel[1], a_pixel[2]]);
+            let b_lab = linear_rgb_to_oklab([b_pixel[0], b_pixel[1], b_pixel[2]]);
+            distance2(a_lab, family.center)
+                .total_cmp(&distance2(b_lab, family.center))
+                .then_with(|| b.alpha.total_cmp(&a.alpha))
+                .then_with(|| a.first_index.cmp(&b.first_index))
+        })
+    }?;
+    let sample_index = sample.sample_index;
+    let swatch = source.pixels[sample_index];
+    Some(PaletteCandidate {
+        stable_order: (family.first_cluster, 0),
+        sample_index,
+        swatch,
+        swatch_lab: linear_rgb_to_oklab([swatch[0], swatch[1], swatch[2]]),
+        support: family.support,
+    })
+}
+
+fn density_mode_candidates(
+    voxels: &[VoxelAccum],
+    voxel_labs: &[[f64; 3]],
+    candidate_by_voxel: &[usize],
+    candidates: &[ColorCandidate],
+    source: &PixelImage,
+    minimum_support: f64,
+) -> Vec<PaletteCandidate> {
+    let core = core_kernel_offsets();
+    let shell = shell_offsets();
+    let core_weight: f64 = core.iter().map(|(_, weight)| weight).sum();
+    let shell_volume = shell.len() as f64;
+    let mut core_mass = vec![0.0_f64; OKLAB_GRID_CELLS];
+    let mut core_density = vec![0.0_f64; OKLAB_GRID_CELLS];
+    let mut shell_density = vec![0.0_f64; OKLAB_GRID_CELLS];
+    let mut active = vec![false; OKLAB_GRID_CELLS];
+
+    // Splat each occupied voxel into its bounded neighborhoods. The symmetric kernels make
+    // this the same fixed-volume convolution as visiting every possible center, while keeping
+    // one-color and small-palette imports proportional to occupied cells rather than 64k cells.
+    for (index, voxel) in voxels.iter().enumerate() {
+        if voxel.alpha <= 0.0 {
+            continue;
+        }
+        let coordinates = oklab_voxel_coordinates(index);
+        for &(offset, weight) in &core {
+            if let Some(center) = oklab_voxel_neighbor(coordinates, offset) {
+                active[center] = true;
+                core_mass[center] += voxel.alpha;
+                core_density[center] += voxel.alpha * weight / core_weight;
+            }
+        }
+        for offset in &shell {
+            if let Some(center) = oklab_voxel_neighbor(coordinates, *offset) {
+                active[center] = true;
+                shell_density[center] += voxel.alpha / shell_volume;
             }
         }
     }
-    support
+    let active_indices: Vec<_> = active
+        .iter()
+        .enumerate()
+        .filter_map(|(index, &is_active)| is_active.then_some(index))
+        .collect();
+
+    // Collapse equal-density local-max plateaus before checking prominence. Choose their
+    // representative with the greatest surrounding shell support, preventing an arbitrary
+    // boundary voxel from appearing denser than the plateau interior.
+    let mut adjacent = Vec::<[isize; 3]>::new();
+    for l in -1..=1 {
+        for a in -1..=1 {
+            for b in -1..=1 {
+                if l != 0 || a != 0 || b != 0 {
+                    adjacent.push([l, a, b]);
+                }
+            }
+        }
+    }
+    let mut visited = vec![false; OKLAB_GRID_CELLS];
+    let mut peaks = Vec::<PaletteCandidate>::new();
+    for start in active_indices {
+        if visited[start] || core_density[start] <= 0.0 {
+            continue;
+        }
+        let level = core_density[start];
+        let mut pending = vec![start];
+        let mut plateau = Vec::new();
+        visited[start] = true;
+        while let Some(index) = pending.pop() {
+            plateau.push(index);
+            let coordinates = oklab_voxel_coordinates(index);
+            for offset in &adjacent {
+                let Some(neighbor) = oklab_voxel_neighbor(coordinates, *offset) else {
+                    continue;
+                };
+                if !visited[neighbor]
+                    && core_density[neighbor] > 0.0
+                    && density_equal(core_density[neighbor], level)
+                {
+                    visited[neighbor] = true;
+                    pending.push(neighbor);
+                }
+            }
+        }
+
+        let mut is_local_maximum = true;
+        let mut minimum = [usize::MAX; 3];
+        let mut maximum = [0usize; 3];
+        for &index in &plateau {
+            let coordinates = oklab_voxel_coordinates(index);
+            for axis in 0..3 {
+                minimum[axis] = minimum[axis].min(coordinates[axis]);
+                maximum[axis] = maximum[axis].max(coordinates[axis]);
+            }
+            for offset in &adjacent {
+                if let Some(neighbor) = oklab_voxel_neighbor(coordinates, *offset)
+                    && core_density[neighbor] > level
+                    && !density_equal(core_density[neighbor], level)
+                {
+                    is_local_maximum = false;
+                    break;
+                }
+            }
+            if !is_local_maximum {
+                break;
+            }
+        }
+        if !is_local_maximum {
+            continue;
+        }
+        let plateau_diameter2: f64 = (0..3)
+            .map(|axis| ((maximum[axis] - minimum[axis]) as f64 * OKLAB_GRID_STEP).powi(2))
+            .sum();
+        if plateau_diameter2 > DISTINCT_D2 {
+            continue;
+        }
+        let representative = plateau
+            .iter()
+            .copied()
+            .filter(|&index| core_mass[index] > minimum_support)
+            .max_by(|&a, &b| {
+                shell_density[a]
+                    .total_cmp(&shell_density[b])
+                    .then_with(|| core_mass[a].total_cmp(&core_mass[b]))
+                    .then_with(|| b.cmp(&a))
+            });
+        let Some(representative) = representative else {
+            continue;
+        };
+        let core_value = core_density[representative];
+        let shell_value = shell_density[representative];
+        if shell_value > 0.0 && core_value < shell_value * DENSITY_PROMINENCE {
+            continue;
+        }
+
+        let coordinates = oklab_voxel_coordinates(representative);
+        let mut center_sum = [0.0_f64; 3];
+        let mut center_weight = 0.0;
+        let mut sample_candidates = Vec::new();
+        for &(offset, weight) in &core {
+            let Some(neighbor) = oklab_voxel_neighbor(coordinates, offset) else {
+                continue;
+            };
+            let alpha = voxels[neighbor].alpha;
+            if alpha <= 0.0 {
+                continue;
+            }
+            let local_weight = alpha * weight;
+            center_weight += local_weight;
+            for component in 0..3 {
+                center_sum[component] += voxel_labs[neighbor][component] * local_weight;
+            }
+            let candidate_index = candidate_by_voxel[neighbor];
+            if candidate_index != usize::MAX {
+                sample_candidates.push(candidate_index);
+            }
+        }
+        if center_weight <= 0.0 {
+            continue;
+        }
+        let center = center_sum.map(|sum| sum / center_weight);
+        let eligible: Vec<_> = sample_candidates
+            .iter()
+            .copied()
+            .filter(|&index| candidates[index].alpha > minimum_support)
+            .collect();
+        let sample_index = if eligible.is_empty() {
+            sample_candidates.into_iter().max_by(|&a, &b| {
+                candidates[a]
+                    .alpha
+                    .total_cmp(&candidates[b].alpha)
+                    .then_with(|| candidates[b].first_index.cmp(&candidates[a].first_index))
+            })
+        } else {
+            eligible.into_iter().min_by(|&a, &b| {
+                let a_pixel = source.pixels[candidates[a].sample_index];
+                let b_pixel = source.pixels[candidates[b].sample_index];
+                let a_lab = linear_rgb_to_oklab([a_pixel[0], a_pixel[1], a_pixel[2]]);
+                let b_lab = linear_rgb_to_oklab([b_pixel[0], b_pixel[1], b_pixel[2]]);
+                distance2(a_lab, center)
+                    .total_cmp(&distance2(b_lab, center))
+                    .then_with(|| candidates[b].alpha.total_cmp(&candidates[a].alpha))
+                    .then_with(|| candidates[a].first_index.cmp(&candidates[b].first_index))
+            })
+        };
+        let Some(sample_index) = sample_index else {
+            continue;
+        };
+        let selected = &candidates[sample_index];
+        let swatch = source.pixels[selected.sample_index];
+        peaks.push(PaletteCandidate {
+            stable_order: (selected.first_index, 1),
+            sample_index: selected.sample_index,
+            swatch,
+            swatch_lab: linear_rgb_to_oklab([swatch[0], swatch[1], swatch[2]]),
+            support: core_value,
+        });
+    }
+    peaks
+}
+
+fn select_palette_candidates(candidates: &[PaletteCandidate]) -> Vec<usize> {
+    if candidates.is_empty() {
+        return Vec::new();
+    }
+    let mut selected = vec![0usize];
+    while selected.len() < MAX_AUTO_SITES {
+        let next = candidates
+            .iter()
+            .enumerate()
+            .filter(|(index, _)| !selected.contains(index))
+            .map(|(index, candidate)| {
+                let nearest = selected
+                    .iter()
+                    .map(|&selected_index| {
+                        distance2(candidate.swatch_lab, candidates[selected_index].swatch_lab)
+                    })
+                    .fold(f64::INFINITY, f64::min);
+                (index, nearest, candidate.support, candidate.stable_order)
+            })
+            .max_by(|a, b| {
+                a.1.total_cmp(&b.1)
+                    .then_with(|| a.2.total_cmp(&b.2))
+                    .then_with(|| b.3.cmp(&a.3))
+            });
+        let Some((index, separation, _, _)) = next else {
+            break;
+        };
+        if separation < DISTINCT_D2 {
+            break;
+        }
+        selected.push(index);
+    }
+    selected
 }

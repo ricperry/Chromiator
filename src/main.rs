@@ -1,5 +1,5 @@
 use std::cell::{Cell, RefCell};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::rc::Rc;
 use std::thread;
 
@@ -29,14 +29,14 @@ use chromiator::picker::{
 };
 use chromiator::preset::{Preset, PresetDiagnostic, PresetEntry, PresetStore};
 use chromiator::processing::{
-    Coverage, DisplayBuffer, bounded_preview, process_cancellable_with_progress_and_coverage,
-    to_display_rgba8,
+    Coverage, DisplayBuffer, bounded_preview,
+    process_preview_cancellable_with_progress_and_coverage, to_display_rgba8,
 };
 use chromiator::scheduler::{JobCoordinator, JobToken, PreviewScheduler, ProgressTracker};
 use chromiator::session::{DocumentSession, EditCommand, EditGesture, SessionChange};
 use chromiator::starter_looks::{STARTER_LOOKS, recipe_for_starter_look};
 use chromiator::workflow::{
-    OpenKind, SaveResolution, classify_open_path, ensure_project_extension,
+    OpenIntent, OpenKind, SaveResolution, classify_open_path, ensure_project_extension,
     resolve_pending_after_save,
 };
 use chromiator::{example, project, raster};
@@ -65,6 +65,218 @@ const VORONOI_MATCHING_LABELS: &[&str] = &["Perceptual (OKLab)", "RGB (sRGB)", "
 const CREATIVE_FOCUS_CLASS: &str = "creative-focus";
 const CANVAS_NATURAL_WIDTH: i32 = 320;
 const CANVAS_NATURAL_HEIGHT: i32 = 240;
+const WORKSPACE_VIEWER_MIN_WIDTH: i32 = CANVAS_NATURAL_WIDTH + 24;
+const WORKSPACE_INSPECTOR_MIN_WIDTH: i32 = 360;
+const WORKSPACE_HANDLE_MIN_WIDTH: i32 = 12;
+const WORKSPACE_WINDOW_MIN_COMPACT_WIDTH: i32 = 600;
+
+fn workspace_split_bounds(width: i32, handle_width: i32) -> (i32, i32) {
+    let minimum_position = WORKSPACE_VIEWER_MIN_WIDTH;
+    let maximum_position = (width - WORKSPACE_INSPECTOR_MIN_WIDTH - handle_width.max(1))
+    .max(minimum_position);
+    (minimum_position, maximum_position)
+}
+
+fn workspace_split_position_for_inspector_width(
+    width: i32,
+    inspector_width: i32,
+    handle_width: i32,
+) -> i32 {
+    let (minimum, maximum) = workspace_split_bounds(width, handle_width);
+    (width - inspector_width - handle_width).clamp(minimum, maximum)
+}
+
+fn workspace_can_preserve_inspector_width(width: i32, inspector_width: i32) -> bool {
+    width - WORKSPACE_VIEWER_MIN_WIDTH - WORKSPACE_HANDLE_MIN_WIDTH >= inspector_width
+}
+
+#[derive(Clone, Copy, Default)]
+struct WorkspaceSplitMemory {
+    width: i32,
+    preferred_inspector_width: i32,
+    visible: bool,
+}
+
+fn connect_workspace_sizing(
+    window: &gtk::ApplicationWindow,
+    stack: &gtk::Stack,
+    paned: &gtk::Paned,
+    inspector: &gtk::ScrolledWindow,
+    compact_header_controls: &[gtk::Widget],
+) {
+    let compact_header_controls: Vec<_> = compact_header_controls
+        .iter()
+        .map(|widget| widget.downgrade())
+        .collect();
+    let split_memory = Rc::new(Cell::new(WorkspaceSplitMemory::default()));
+    let adjusting_position = Rc::new(Cell::new(false));
+    let pointer_adjusting = Rc::new(Cell::new(false));
+    let key_adjusting = Rc::new(Cell::new(false));
+    let input = gtk::EventControllerLegacy::new();
+    input.set_propagation_phase(gtk::PropagationPhase::Capture);
+    {
+        let paned = paned.downgrade();
+        let pointer_adjusting = pointer_adjusting.clone();
+        let key_adjusting = key_adjusting.clone();
+        input.connect_event(move |_, event| {
+            match event.event_type() {
+                gtk::gdk::EventType::ButtonPress | gtk::gdk::EventType::ButtonRelease
+                    if event
+                        .downcast_ref::<gtk::gdk::ButtonEvent>()
+                        .is_some_and(|button| button.button() == 1) =>
+                {
+                    if event.event_type() == gtk::gdk::EventType::ButtonPress {
+                        pointer_adjusting.set(true);
+                    } else {
+                        let pointer_adjusting = pointer_adjusting.clone();
+                        glib::idle_add_local_once(move || pointer_adjusting.set(false));
+                    }
+                }
+                gtk::gdk::EventType::KeyPress
+                    if paned.upgrade().is_some_and(|paned| paned.has_focus()) =>
+                {
+                    key_adjusting.set(true);
+                    let key_adjusting = key_adjusting.clone();
+                    glib::idle_add_local_once(move || key_adjusting.set(false));
+                }
+                _ => {}
+            }
+            glib::Propagation::Proceed
+        });
+    }
+    paned.add_controller(input);
+    let update = Rc::new({
+        let window = window.downgrade();
+        let stack = stack.downgrade();
+        let paned = paned.downgrade();
+        let inspector = inspector.downgrade();
+        let compact_header_controls = compact_header_controls.clone();
+        let split_memory = split_memory.clone();
+        let adjusting_position = adjusting_position.clone();
+        move || {
+            let (Some(window), Some(stack), Some(paned), Some(inspector)) = (
+                window.upgrade(),
+                stack.upgrade(),
+                paned.upgrade(),
+                inspector.upgrade(),
+            ) else {
+                return;
+            };
+            let document_page = stack.visible_child_name().as_deref() == Some("document");
+            let inspector_visible = document_page && inspector.is_visible();
+            let minimum_width = if !document_page {
+                -1
+            } else if inspector_visible {
+                WORKSPACE_VIEWER_MIN_WIDTH
+                    + WORKSPACE_INSPECTOR_MIN_WIDTH
+                    + WORKSPACE_HANDLE_MIN_WIDTH
+            } else {
+                WORKSPACE_WINDOW_MIN_COMPACT_WIDTH
+            };
+            if window.width_request() != minimum_width {
+                window.set_size_request(minimum_width, -1);
+            }
+            for control in &compact_header_controls {
+                if let Some(control) = control.upgrade() {
+                    control.set_visible(document_page && inspector_visible);
+                }
+            }
+            let mut memory = split_memory.get();
+            if !inspector_visible {
+                memory.visible = false;
+                split_memory.set(memory);
+                return;
+            }
+            if !paned.is_mapped() || paned.width() <= 0 {
+                return;
+            }
+
+            let width = paned.width();
+            let handle_width = WORKSPACE_HANDLE_MIN_WIDTH;
+            let preserve_inspector_width = memory.preferred_inspector_width > 0
+                && (!memory.visible || (memory.width > 0 && memory.width != width));
+            let desired_position = if preserve_inspector_width {
+                workspace_split_position_for_inspector_width(
+                    width,
+                    memory.preferred_inspector_width,
+                    handle_width,
+                )
+            } else {
+                paned.position()
+            };
+            let (minimum, maximum) = workspace_split_bounds(width, handle_width);
+            let position = desired_position.clamp(minimum, maximum);
+            memory.width = width;
+            if memory.preferred_inspector_width <= 0 {
+                memory.preferred_inspector_width = width - position - handle_width;
+            }
+            memory.visible = true;
+            split_memory.set(memory);
+            if position != paned.position() {
+                adjusting_position.set(true);
+                paned.set_position(position);
+                adjusting_position.set(false);
+            }
+        }
+    });
+    let queue_update: Rc<dyn Fn()> = Rc::new({
+        let update = update.clone();
+        move || {
+            let update = update.clone();
+            glib::idle_add_local_once(move || update());
+        }
+    });
+
+    let changed = update.clone();
+    let queued = queue_update.clone();
+    stack.connect_visible_child_notify(move |_| {
+        changed();
+        queued();
+    });
+    let changed = update.clone();
+    let queued = queue_update.clone();
+    inspector.connect_visible_notify(move |_| {
+        changed();
+        queued();
+    });
+    let queued = queue_update.clone();
+    paned.connect_map(move |_| queued());
+    let queued = queue_update.clone();
+    paned.connect_max_position_notify(move |_| queued());
+    let queued = queue_update.clone();
+    paned.connect_min_position_notify(move |_| queued());
+    let split_memory = split_memory.clone();
+    let adjusting_position = adjusting_position.clone();
+    let pointer_adjusting = pointer_adjusting.clone();
+    let key_adjusting = key_adjusting.clone();
+    paned.connect_position_notify(move |paned| {
+        let memory = split_memory.get();
+        if !adjusting_position.get()
+            && paned.is_mapped()
+            && memory.visible
+            && memory.width == paned.width()
+            && (workspace_can_preserve_inspector_width(
+                paned.width(),
+                memory.preferred_inspector_width,
+            ) || pointer_adjusting.get()
+                || key_adjusting.get())
+        {
+            let width = paned.width();
+            let handle_width = WORKSPACE_HANDLE_MIN_WIDTH;
+            let preferred_inspector_width = width - paned.position() - handle_width;
+            if preferred_inspector_width > 0 {
+                split_memory.set(WorkspaceSplitMemory {
+                    preferred_inspector_width,
+                    ..memory
+                });
+            }
+        }
+        // The paned's native child minima constrain an active drag. Position
+        // notifications only record the user's chosen inspector width; size
+        // and visibility changes restore it through the queued update above.
+    });
+    update();
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct ContextualChrome {
@@ -83,6 +295,45 @@ fn contextual_chrome(has_document: bool, busy: bool) -> ContextualChrome {
 
 fn selected_user_preset_index(selected: usize, starter_count: usize) -> Option<usize> {
     selected.checked_sub(starter_count + 1)
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum PresetSelectionIdentity {
+    Builtin(&'static str),
+    User(PathBuf),
+}
+
+fn preset_selection_identity(
+    selected: usize,
+    entries: &[PresetEntry],
+) -> Option<PresetSelectionIdentity> {
+    if selected == 0 {
+        return None;
+    }
+    if let Some(look) = STARTER_LOOKS.get(selected - 1) {
+        return Some(PresetSelectionIdentity::Builtin(look.id));
+    }
+    let user_index = selected_user_preset_index(selected, STARTER_LOOKS.len())?;
+    entries
+        .get(user_index)
+        .map(|entry| PresetSelectionIdentity::User(entry.path.clone()))
+}
+
+fn preset_selection_index(
+    identity: Option<&PresetSelectionIdentity>,
+    entries: &[PresetEntry],
+) -> Option<usize> {
+    match identity {
+        Some(PresetSelectionIdentity::Builtin(id)) => STARTER_LOOKS
+            .iter()
+            .position(|look| look.id == *id)
+            .map(|index| index + 1),
+        Some(PresetSelectionIdentity::User(path)) => entries
+            .iter()
+            .position(|entry| entry.path == *path)
+            .map(|index| STARTER_LOOKS.len() + 1 + index),
+        None => None,
+    }
 }
 
 fn visible_voronoi_matching_index(matching: VoronoiMatching) -> u32 {
@@ -107,6 +358,7 @@ fn visible_voronoi_matching_at(index: u32) -> VoronoiMatching {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Replacement {
     OpenImage,
+    OpenImageOrProject,
     OpenProject,
     Example,
 }
@@ -202,6 +454,7 @@ struct Ui {
     recent_store: RefCell<welcome::RecentProjects>,
     export: gtk::Button,
     document_menu: gtk::MenuButton,
+    presets_menu: gtk::MenuButton,
     hue: gtk::Adjustment,
     picker_dialog: RefCell<Option<gtk::Window>>,
     voronoi_matching: gtk::DropDown,
@@ -213,12 +466,16 @@ struct Ui {
     split_mode: gtk::ToggleButton,
     sidebar_button: gtk::ToggleButton,
     divider: gtk::Adjustment,
+    preset_dialog: gtk::Window,
     preset_dropdown: gtk::DropDown,
     preset_model: gtk::StringList,
     preset_info: gtk::Label,
-    preset_save: gtk::Button,
+    preset_apply: gtk::Button,
     preset_refresh: gtk::Button,
     preset_folder: gtk::Button,
+    preset_dialog_open: Cell<bool>,
+    preset_dialog_previous_selection: RefCell<Option<PresetSelectionIdentity>>,
+    preset_dialog_applied: Cell<bool>,
     syncing: Cell<bool>,
     cli: Cli,
     snapshot_root: gtk::Widget,
@@ -252,12 +509,16 @@ struct InspectorControls {
     smoothing: gtk::SpinButton,
     voronoi_panel: gtk::Expander,
     groups: gtk::ListBox,
-    preset_dropdown: gtk::DropDown,
-    preset_model: gtk::StringList,
-    preset_info: gtk::Label,
-    preset_save: gtk::Button,
-    preset_refresh: gtk::Button,
-    preset_folder: gtk::Button,
+}
+
+struct PresetSelector {
+    window: gtk::Window,
+    dropdown: gtk::DropDown,
+    model: gtk::StringList,
+    info: gtk::Label,
+    apply: gtk::Button,
+    refresh: gtk::Button,
+    folder: gtk::Button,
 }
 
 fn main() -> glib::ExitCode {
@@ -341,11 +602,21 @@ fn build(app: &gtk::Application, cli: Cli) {
     let export = shell.export_button();
     let document_menu_model = gio::Menu::new();
     document_menu_model.append(Some("Open Project…"), Some("app.open-project"));
+    document_menu_model.append(Some("Save Project"), Some("app.save"));
     document_menu_model.append(Some("Save Project As…"), Some("app.save-as"));
+    document_menu_model.append(Some("Undo"), Some("app.creative-undo"));
+    document_menu_model.append(Some("Redo"), Some("app.creative-redo"));
     document_menu_model.append(Some("Export Image…"), Some("app.export"));
     let document_menu = shell.document_menu();
     document_menu.set_menu_model(Some(&document_menu_model));
     document_menu.update_property(&[gtk::accessible::Property::Label("Document Menu")]);
+    let presets_menu_model = gio::Menu::new();
+    presets_menu_model.append(Some("Select Preset…"), Some("app.select-preset"));
+    presets_menu_model.append(Some("Load Preset…"), Some("app.load-preset"));
+    presets_menu_model.append(Some("Save Preset…"), Some("app.save-preset"));
+    let presets_menu = shell.presets_menu();
+    presets_menu.set_menu_model(Some(&presets_menu_model));
+    presets_menu.update_property(&[gtk::accessible::Property::Label("Presets")]);
     let sidebar_button = shell.sidebar_button();
     let file_spacer = shell.file_spacer();
     let history_spacer = shell.history_spacer();
@@ -362,17 +633,21 @@ fn build(app: &gtk::Application, cli: Cli) {
     let result_mode = shell.result_mode();
     let split_mode = shell.split_mode();
     let source_mode = shell.source_mode();
-    let smoothing = gtk::SpinButton::with_range(0.0, 10.0, 0.1);
+    let smoothing = gtk::SpinButton::with_range(
+        0.0,
+        f64::from(chromiator::document::MAX_INPUT_SMOOTHING_SIGMA),
+        0.1,
+    );
     smoothing.set_numeric(true);
     smoothing.set_digits(2);
-    smoothing.set_width_chars(4);
+    smoothing.set_width_chars(8);
     smoothing.set_tooltip_text(Some(
-        "Gaussian preprocessing before Voronoi mapping; 0 disables smoothing",
+        "Gaussian sigma in original source-image pixels; 0 disables smoothing. Above 10 uses a fast Gaussian approximation.",
     ));
     smoothing.update_property(&[
-        gtk::accessible::Property::Label("Smooth source amount from 0 to 10"),
+        gtk::accessible::Property::Label("Smooth source sigma in source pixels"),
         gtk::accessible::Property::Description(
-            "Gaussian preprocessing before Voronoi mapping; zero disables smoothing",
+            "Gaussian sigma in original source-image pixels; zero disables smoothing. Above 10 uses a fast Gaussian approximation.",
         ),
     ]);
     let InspectorControls {
@@ -383,25 +658,34 @@ fn build(app: &gtk::Application, cli: Cli) {
         smoothing,
         voronoi_panel,
         groups,
-        preset_dropdown,
-        preset_model,
-        preset_info,
-        preset_save,
-        preset_refresh,
-        preset_folder,
     } = inspector(&smoothing);
+    let PresetSelector {
+        window: preset_dialog,
+        dropdown: preset_dropdown,
+        model: preset_model,
+        info: preset_info,
+        apply: preset_apply,
+        refresh: preset_refresh,
+        folder: preset_folder,
+    } = preset_selector(&window);
     let inspector_scroll = shell.inspector_scroll();
     shell.inspector_content().append(&inspector);
     let empty_button = shell.welcome_open();
     let empty_project = shell.welcome_project();
     let empty_example = shell.welcome_example();
-    let hero_texture = gtk::gdk::Texture::for_pixbuf(&embedded_example_pixbuf());
-    let hero = gtk::Picture::for_paintable(&hero_texture);
-    hero.set_content_fit(gtk::ContentFit::Cover);
-    hero.set_can_shrink(true);
-    hero.update_property(&[gtk::accessible::Property::Label(
-        "Spectrum Breakpoint example artwork",
-    )]);
+    let hero = gtk::Picture::new();
+    let hero_has_artwork =
+        if let Some(hero_pixbuf) = embedded_example_pixbuf(example::SPECTRUM_BYTES) {
+            hero.set_paintable(Some(&gtk::gdk::Texture::for_pixbuf(&hero_pixbuf)));
+            hero.set_content_fit(gtk::ContentFit::Cover);
+            hero.set_can_shrink(true);
+            hero.update_property(&[gtk::accessible::Property::Label(
+                "Spectrum Breakpoint example artwork",
+            )]);
+            true
+        } else {
+            false
+        };
     // The artwork covers its full allocation rather than fitting an aspect frame
     // inside it, which left side gutters when the available height was constrained.
     let banner = gtk::DrawingArea::builder()
@@ -412,8 +696,10 @@ fn build(app: &gtk::Application, cli: Cli) {
     banner_overlay.set_child(Some(&banner));
     hero.set_hexpand(true);
     hero.set_vexpand(true);
-    banner_overlay.add_overlay(&hero);
-    banner_overlay.set_measure_overlay(&hero, false);
+    if hero_has_artwork {
+        banner_overlay.add_overlay(&hero);
+        banner_overlay.set_measure_overlay(&hero, false);
+    }
     let window_controls = gtk::WindowControls::new(gtk::PackType::End);
     window_controls.set_halign(gtk::Align::End);
     window_controls.set_valign(gtk::Align::Start);
@@ -428,6 +714,21 @@ fn build(app: &gtk::Application, cli: Cli) {
     empty_project.bind_property("sensitive", &recent_projects, "sensitive").sync_create().build();
     let stack = shell.page_stack();
     stack.set_visible_child_name("empty");
+    let workspace_split = shell.split();
+    let compact_header_controls: [gtk::Widget; 5] = [
+        save.clone().upcast(),
+        undo.clone().upcast(),
+        redo.clone().upcast(),
+        file_spacer.clone().upcast(),
+        history_spacer.clone().upcast(),
+    ];
+    connect_workspace_sizing(
+        &window,
+        &stack,
+        &workspace_split,
+        &inspector_scroll,
+        &compact_header_controls,
+    );
     let progress = shell.progress();
     progress.update_property(&[
         gtk::accessible::Property::Label("Operation progress"),
@@ -474,6 +775,7 @@ fn build(app: &gtk::Application, cli: Cli) {
         recent_store: RefCell::new(welcome::RecentProjects::load()),
         export: export.clone(),
         document_menu: document_menu.clone(),
+        presets_menu: presets_menu.clone(),
         hue,
         picker_dialog: RefCell::new(None),
         voronoi_matching,
@@ -485,12 +787,16 @@ fn build(app: &gtk::Application, cli: Cli) {
         split_mode: split_mode.clone(),
         sidebar_button: sidebar_button.clone(),
         divider: divider.clone(),
+        preset_dialog,
         preset_dropdown,
         preset_model,
         preset_info,
-        preset_save,
+        preset_apply,
         preset_refresh,
         preset_folder,
+        preset_dialog_open: Cell::new(false),
+        preset_dialog_previous_selection: RefCell::new(None),
+        preset_dialog_applied: Cell::new(false),
         syncing: Cell::new(false),
         cli: cli.clone(),
         snapshot_root: shell.clone().upcast(),
@@ -521,7 +827,7 @@ fn build(app: &gtk::Application, cli: Cli) {
     preset_controls(&ui, state.clone());
     group_selection(&ui, state.clone());
     canvas_sampling(&ui, state.clone());
-    replacement_handler(&open, Replacement::OpenImage, &ui, state.clone());
+    replacement_handler(&open, Replacement::OpenImageOrProject, &ui, state.clone());
     replacement_handler(&empty_button, Replacement::OpenImage, &ui, state.clone());
     replacement_handler(&empty_project, Replacement::OpenProject, &ui, state.clone());
     replacement_handler(&empty_example, Replacement::Example, &ui, state.clone());
@@ -562,6 +868,7 @@ fn build(app: &gtk::Application, cli: Cli) {
         sidebar_button.set_active(false);
     }
     actions(app, &open, &empty_project, &save, &save_as, &export);
+    preset_actions(app, &ui, &state);
     creative_history_actions(app, &ui, &state);
     close_guard(&window, state.clone());
     poll(&ui, state.clone());
@@ -647,14 +954,14 @@ fn prepare_document(
     let _ = sender.send(Work::Progress(
         token.generation(),
         0.50,
-        "Building bounded preview…",
+        "Building bounded source view…",
     ));
     let preview_source = bounded_preview(&document.source);
     if !token.is_current() {
         anyhow::bail!("open cancelled")
     }
-    let (result, coverage) = process_cancellable_with_progress_and_coverage(
-        &preview_source,
+    let (result, coverage) = process_preview_cancellable_with_progress_and_coverage(
+        &document.source,
         &document.recipe,
         token.generation(),
         token.current(),
@@ -662,7 +969,7 @@ fn prepare_document(
             let _ = sender.send(Work::Progress(
                 token.generation(),
                 0.55 + fraction * 0.30,
-                "Processing preview rows…",
+                "Processing source image…",
             ));
         },
     )
@@ -682,6 +989,7 @@ fn prepare_document(
         path,
         document_kind,
         preview_source,
+        result,
         source_display,
         result_display,
         coverage,
@@ -720,9 +1028,9 @@ fn initialize_voronoi(document: &mut Document) {
     document.recipe.voronoi = chromiator::voronoi::auto_initialize(&proxy, &document.source);
 }
 
-fn embedded_example_pixbuf() -> Pixbuf {
-    Pixbuf::from_read(std::io::Cursor::new(example::SPECTRUM_BYTES))
-        .expect("compiled Spectrum example is a valid raster")
+fn embedded_example_pixbuf(bytes: &[u8]) -> Option<Pixbuf> {
+    let decoded = raster::decode(bytes, None).ok()?;
+    Some(pixbuf(to_display_rgba8(&decoded.pixels)))
 }
 
 fn embedded_example_document() -> anyhow::Result<Document> {
@@ -737,6 +1045,11 @@ fn begin_job(
     if ui.picker_dialog.borrow().is_some() {
         ui.status
             .set_label("Close the creative dialog before starting a file operation");
+        return None;
+    }
+    if ui.preset_dialog_open.get() {
+        ui.status
+            .set_label("Close the preset dialog before starting a file operation");
         return None;
     }
     let started = {
@@ -880,21 +1193,76 @@ fn sync_contextual_chrome(ui: &Ui, state: &Rc<RefCell<State>>) {
     if let Some(titlebar) = ui.window.titlebar() {
         titlebar.set_visible(state.session.document().is_some());
     }
-    for widget in [
-        ui.open.clone().upcast::<gtk::Widget>(),
-        ui.save.clone().upcast(),
-        ui.undo.clone().upcast(),
-        ui.redo.clone().upcast(),
-        ui.export.clone().upcast(),
-        ui.sidebar_button.clone().upcast(),
-        ui.document_menu.clone().upcast(),
-        ui.file_spacer.clone().upcast(),
-        ui.history_spacer.clone().upcast(),
+    let compact_header = chrome.document_actions && !ui.inspector_scroll.is_visible();
+    for (widget, compact_only) in [
+        (ui.open.clone().upcast::<gtk::Widget>(), false),
+        (ui.save.clone().upcast(), true),
+        (ui.undo.clone().upcast(), true),
+        (ui.redo.clone().upcast(), true),
+        (ui.export.clone().upcast(), false),
+        (ui.sidebar_button.clone().upcast(), false),
+        (ui.document_menu.clone().upcast(), false),
+        (ui.presets_menu.clone().upcast(), false),
+        (ui.file_spacer.clone().upcast(), true),
+        (ui.history_spacer.clone().upcast(), true),
     ] {
-        widget.set_visible(chrome.document_actions);
+        widget.set_visible(chrome.document_actions && !(compact_header && compact_only));
+    }
+    let presets_enabled = state.session.document().is_some()
+        && !state.jobs.is_busy()
+        && !state.picker_visible
+        && !ui.preset_dialog_open.get();
+    ui.presets_menu.set_sensitive(presets_enabled);
+    if let Some(app) = ui.window.application() {
+        for name in ["select-preset", "load-preset", "save-preset"] {
+            if let Some(action) = app
+                .lookup_action(name)
+                .and_then(|action| action.downcast::<gio::SimpleAction>().ok())
+            {
+                action.set_enabled(presets_enabled);
+            }
+        }
     }
     ui.status_bar.set_visible(chrome.feedback_bar);
     ui.pipeline_status.set_visible(chrome.pipeline_metadata);
+}
+
+fn preset_actions_allowed(ui: &Ui, state: &Rc<RefCell<State>>) -> bool {
+    let state = state.borrow();
+    state.session.document().is_some()
+        && !state.jobs.is_busy()
+        && !state.picker_visible
+        && ui.picker_dialog.borrow().is_none()
+        && !ui.preset_dialog_open.get()
+}
+
+fn set_preset_dialog_open(ui: &Ui, state: &Rc<RefCell<State>>, open: bool) {
+    ui.preset_dialog_open.set(open);
+    sync_contextual_chrome(ui, state);
+}
+
+fn preset_actions(app: &gtk::Application, ui: &Rc<Ui>, state: &Rc<RefCell<State>>) {
+    for name in ["select-preset", "load-preset", "save-preset"] {
+        let action = gio::SimpleAction::new(name, None);
+        let ui = ui.clone();
+        let state = state.clone();
+        action.connect_activate(move |_, _| {
+            if !preset_actions_allowed(&ui, &state) {
+                return;
+            }
+            match name {
+                "select-preset" => present_preset_selector(&ui, &state),
+                "load-preset" => shell_actions::load_preset_dialog(&ui, &state),
+                "save-preset" => {
+                    refresh_preset_ui(&ui, &state, false);
+                    present_save_preset(&ui, &state);
+                }
+                _ => unreachable!("preset menu action name is fixed"),
+            }
+        });
+        app.add_action(&action);
+    }
+    sync_contextual_chrome(ui, state);
 }
 
 fn compact_section(title: &str, child: &impl IsA<gtk::Widget>, expanded: bool) -> gtk::Expander {
@@ -913,15 +1281,8 @@ fn inspector_control_row(title: &str, subtitle: &str, control: &impl IsA<gtk::Wi
     label.set_mnemonic_widget(Some(control));
     control.as_ref().update_relation(&[gtk::accessible::Relation::LabelledBy(&[label.upcast_ref()])]);
     control.as_ref().set_tooltip_text(Some(subtitle));
+    control.as_ref().update_property(&[gtk::accessible::Property::Description(subtitle)]);
     labels.append(&label);
-    labels.append(
-        &gtk::Label::builder()
-            .label(subtitle)
-            .xalign(0.0)
-            .wrap(true)
-            .css_classes(["dim-label", "caption"])
-            .build(),
-    );
     let row = gtk::Box::new(gtk::Orientation::Horizontal, 10);
     row.add_css_class("chromiator-control-row");
     row.append(&labels);
@@ -944,26 +1305,18 @@ fn inspector(smoothing: &gtk::SpinButton) -> InspectorControls {
             "Choose the three-dimensional color space used to assign pixels to color sites",
         ),
     ]);
-    let mapping_group = gtk::Box::new(gtk::Orientation::Vertical, 4);
-    mapping_group.add_css_class("chromiator-inspector-group");
-    mapping_group.append(
-        &gtk::Label::builder()
-            .label("Color mapping")
-            .xalign(0.0)
-            .css_classes(["heading"])
-            .build(),
-    );
+    let mapping_group = gtk::Box::new(gtk::Orientation::Vertical, 8);
     mapping_group.append(&inspector_control_row(
         "_Matching",
-        "Distance geometry for Source colors",
+        "Choose the three-dimensional color space used to assign pixels to color sites.",
         &matching,
     ));
     mapping_group.append(&inspector_control_row(
-        "_Smoothing",
-        "Source preprocessing before color mapping",
+        "_Smoothing σ (source px)",
+        "Gaussian blur sigma measured in original source-image pixels; zero disables smoothing. Above 10 uses a fast Gaussian approximation.",
         smoothing,
     ));
-    root.append(&mapping_group);
+    root.append(&compact_section("Color mapping", &mapping_group, false));
     let transitions = transition_controls::TransitionControls::new(&mapping_group);
 
     let groups = gtk::ListBox::new();
@@ -980,29 +1333,6 @@ fn inspector(smoothing: &gtk::SpinButton) -> InspectorControls {
     voronoi_panel.set_vexpand(true);
     root.append(&voronoi_panel);
 
-    let preset_model = gtk::StringList::new(&["Choose a preset…"]);
-    let preset_dropdown = gtk::DropDown::new(Some(preset_model.clone()), gtk::Expression::NONE);
-    preset_dropdown.set_hexpand(true);
-    preset_dropdown.update_property(&[gtk::accessible::Property::Label("Preset")]);
-    let preset_info = gtk::Label::builder()
-        .label("Built-in and personal Voronoi recipes")
-        .xalign(0.0)
-        .wrap(true)
-        .css_classes(["dim-label", "caption"])
-        .build();
-    let preset_save = gtk::Button::with_label("Save Preset…");
-    let preset_refresh = icon_button("view-refresh-symbolic", "Refresh personal presets");
-    let preset_folder = icon_button("folder-open-symbolic", "Open personal preset folder");
-    let preset_actions = gtk::Box::new(gtk::Orientation::Horizontal, 6);
-    preset_actions.append(&preset_save);
-    preset_actions.append(&preset_refresh);
-    preset_actions.append(&preset_folder);
-    let preset_box = gtk::Box::new(gtk::Orientation::Vertical, 8);
-    preset_box.append(&preset_dropdown);
-    preset_box.append(&preset_info);
-    preset_box.append(&preset_actions);
-    root.append(&compact_section("Presets", &preset_box, true));
-
     InspectorControls {
         transitions,
         root,
@@ -1011,12 +1341,75 @@ fn inspector(smoothing: &gtk::SpinButton) -> InspectorControls {
         smoothing: smoothing.clone(),
         voronoi_panel,
         groups,
-        preset_dropdown,
-        preset_model,
-        preset_info,
-        preset_save,
-        preset_refresh,
-        preset_folder,
+    }
+}
+
+fn preset_selector(parent: &gtk::ApplicationWindow) -> PresetSelector {
+    let model = gtk::StringList::new(&["Choose a preset…"]);
+    let dropdown = gtk::DropDown::new(Some(model.clone()), gtk::Expression::NONE);
+    dropdown.set_hexpand(true);
+    dropdown.update_property(&[
+        gtk::accessible::Property::Label("Preset selection"),
+        gtk::accessible::Property::Description(
+            "Choose a built-in or personal processing recipe, then apply it to the current image",
+        ),
+    ]);
+    let info = gtk::Label::builder()
+        .label("Built-in and personal Voronoi recipes")
+        .xalign(0.0)
+        .wrap(true)
+        .css_classes(["dim-label", "caption"])
+        .build();
+    let refresh = icon_button("view-refresh-symbolic", "Refresh personal presets");
+    let folder = icon_button("folder-open-symbolic", "Open personal preset folder");
+    let convenience = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+    convenience.append(&refresh);
+    convenience.append(&folder);
+    let content = gtk::Box::new(gtk::Orientation::Vertical, 12);
+    content.set_margin_top(18);
+    content.set_margin_bottom(18);
+    content.set_margin_start(18);
+    content.set_margin_end(18);
+    content.append(&gtk::Label::builder()
+        .label("Choose a built-in or personal preset to replace the current processing settings.")
+        .wrap(true)
+        .xalign(0.0)
+        .build());
+    content.append(&dropdown);
+    content.append(&info);
+    content.append(&convenience);
+
+    let cancel = gtk::Button::with_label("Cancel");
+    let apply = gtk::Button::with_label("Apply");
+    apply.add_css_class("suggested-action");
+    apply.set_sensitive(false);
+    apply.update_property(&[gtk::accessible::Property::Label("Apply selected preset")]);
+    let header = gtk::HeaderBar::new();
+    header.pack_start(&cancel);
+    header.pack_end(&apply);
+    let window = gtk::Window::builder()
+        .title("Select Preset")
+        .default_width(440)
+        .default_height(280)
+        .transient_for(parent)
+        .modal(true)
+        .destroy_with_parent(true)
+        .hide_on_close(true)
+        .child(&content)
+        .build();
+    window.set_titlebar(Some(&header));
+    cancel.connect_clicked({
+        let window = window.clone();
+        move |_| window.close()
+    });
+    PresetSelector {
+        window,
+        dropdown,
+        model,
+        info,
+        apply,
+        refresh,
+        folder,
     }
 }
 
@@ -1100,7 +1493,10 @@ fn apply_session_change(
     {
         let current = state.borrow_mut();
         if change.preview_required
-            && let Some(source) = current.preview_source.clone()
+            && let Some(source) = current
+                .session
+                .document()
+                .map(|document| document.source.clone())
         {
             current.scheduler.schedule(source, change.recipe.clone());
         }
@@ -1158,15 +1554,24 @@ fn update_preset_info(ui: &Ui, state: &Rc<RefCell<State>>) {
     };
     let selected = ui.preset_dropdown.selected() as usize;
     let description = if selected == 0 {
-        "Choose a preset to apply immediately".into()
+        "Choose a preset, then Apply to replace the processing settings".into()
     } else if let Some(look) = STARTER_LOOKS.get(selected - 1) {
         format!("Built-in · {}", look.description)
     } else {
         current
             .preset_entries
             .get(selected_user_preset_index(selected, STARTER_LOOKS.len()).unwrap_or(usize::MAX))
-            .and_then(|entry| entry.preset.description.clone())
-            .unwrap_or_else(|| "User preset · no description".into())
+            .map(|entry| {
+                format!(
+                    "Personal preset · {}",
+                    entry
+                        .preset
+                        .description
+                        .as_deref()
+                        .unwrap_or("no description")
+                )
+            })
+            .unwrap_or_else(|| "Personal preset · no description".into())
     };
     ui.preset_info
         .set_label(&format!("{summary} · {description}"));
@@ -1175,9 +1580,13 @@ fn update_preset_info(ui: &Ui, state: &Rc<RefCell<State>>) {
 }
 
 fn unified_preset_labels(entries: &[PresetEntry]) -> Vec<String> {
-    let mut labels = vec!["Presets…".to_owned()];
+    let mut labels = vec!["Choose a preset…".to_owned()];
     labels.extend(STARTER_LOOKS.iter().map(|look| look.name.to_owned()));
-    labels.extend(entries.iter().map(|entry| entry.preset.name.clone()));
+    labels.extend(
+        entries
+            .iter()
+            .map(|entry| format!("{} (Personal)", entry.preset.name)),
+    );
     labels
 }
 
@@ -1185,13 +1594,11 @@ fn install_preset_scan(
     ui: &Ui,
     state: &Rc<RefCell<State>>,
     scan: chromiator::preset::PresetScan,
-    preferred_path: Option<&Path>,
+    preferred: Option<&PresetSelectionIdentity>,
     show_errors: bool,
 ) {
     let labels = unified_preset_labels(&scan.entries);
-    let selected = preferred_path
-        .and_then(|path| scan.entries.iter().position(|entry| entry.path == path))
-        .map(|index| STARTER_LOOKS.len() + 1 + index);
+    let selected = preset_selection_index(preferred, &scan.entries);
     let diagnostics = scan.diagnostics.clone();
     {
         let mut current = state.borrow_mut();
@@ -1203,6 +1610,7 @@ fn install_preset_scan(
     ui.preset_dropdown
         .set_selected(selected.map_or(0, |index| index as u32));
     ui.syncing.set(false);
+    ui.preset_apply.set_sensitive(selected.is_some());
     update_preset_info(ui, state);
     if show_errors && !diagnostics.is_empty() {
         let body = diagnostics
@@ -1227,13 +1635,9 @@ fn install_preset_scan(
 
 fn refresh_preset_ui(ui: &Ui, state: &Rc<RefCell<State>>, show_errors: bool) {
     let selected = ui.preset_dropdown.selected() as usize;
-    let previous = state
-        .borrow()
-        .preset_entries
-        .get(selected_user_preset_index(selected, STARTER_LOOKS.len()).unwrap_or(usize::MAX))
-        .map(|entry| entry.path.clone());
+    let previous = preset_selection_identity(selected, &state.borrow().preset_entries);
     match PresetStore::system().scan() {
-        Ok(scan) => install_preset_scan(ui, state, scan, previous.as_deref(), show_errors),
+        Ok(scan) => install_preset_scan(ui, state, scan, previous.as_ref(), show_errors),
         Err(error) => {
             ui.status
                 .set_label(&format!("Could not scan presets: {error:#}"));
@@ -1241,11 +1645,56 @@ fn refresh_preset_ui(ui: &Ui, state: &Rc<RefCell<State>>, show_errors: bool) {
     }
 }
 
-fn apply_preset_selection(ui: &Rc<Ui>, state: &Rc<RefCell<State>>, selected: usize) {
-    if selected == 0 {
-        return;
+fn set_preset_selection(ui: &Ui, state: &Rc<RefCell<State>>, selected: usize) {
+    ui.syncing.set(true);
+    ui.preset_dropdown.set_selected(selected as u32);
+    ui.syncing.set(false);
+    update_preset_info(ui, state);
+    ui.preset_apply.set_sensitive(selected != 0);
+}
+
+fn apply_preset_recipe(
+    ui: &Rc<Ui>,
+    state: &Rc<RefCell<State>>,
+    recipe: Recipe,
+    selected: Option<usize>,
+    message: &str,
+) -> bool {
+    let unchanged = state
+        .borrow()
+        .session
+        .document()
+        .is_some_and(|document| document.recipe == recipe);
+    if unchanged {
+        ui.status.set_label("Preset already matches this document");
+        set_preset_selection(ui, state, selected.unwrap_or(0));
+        return true;
     }
-    let applied_selection = selected;
+    if !submit_session_edit(
+        ui,
+        state,
+        EditCommand::ReplaceRecipe(recipe),
+        None,
+        message,
+    ) {
+        return false;
+    }
+    {
+        let mut current = state.borrow_mut();
+        current.sampling = None;
+        current.sampling_previous_mode = None;
+    }
+    set_preset_selection(ui, state, selected.unwrap_or(0));
+    sync_recipe_controls(ui, state);
+    refresh_voronoi_ui(ui, state);
+    true
+}
+
+fn apply_preset_selection(ui: &Rc<Ui>, state: &Rc<RefCell<State>>, selected: usize) -> bool {
+    if selected == 0 {
+        return false;
+    }
+    let mut applied_selection = selected;
     let selected = selected - 1;
     let user_preset = if selected >= STARTER_LOOKS.len() {
         let cached = state
@@ -1253,14 +1702,14 @@ fn apply_preset_selection(ui: &Rc<Ui>, state: &Rc<RefCell<State>>, selected: usi
             .preset_entries
             .get(selected - STARTER_LOOKS.len())
             .cloned();
-        let Some(cached) = cached else { return };
+        let Some(cached) = cached else { return false };
         let scan = match PresetStore::system().scan() {
             Ok(scan) => scan,
             Err(error) => {
                 ui.status.set_label(&format!(
                     "Could not rescan presets before selection: {error:#}"
                 ));
-                return;
+                return false;
             }
         };
         let fresh = scan
@@ -1268,16 +1717,25 @@ fn apply_preset_selection(ui: &Rc<Ui>, state: &Rc<RefCell<State>>, selected: usi
             .iter()
             .find(|entry| entry.path == cached.path)
             .cloned();
-        install_preset_scan(ui, state, scan, Some(&cached.path), false);
+        let preferred = PresetSelectionIdentity::User(cached.path.clone());
+        install_preset_scan(ui, state, scan, Some(&preferred), false);
         let Some(fresh) = fresh else {
             ui.status
                 .set_label("Selected user preset was removed or is no longer valid");
-            return;
+            return false;
         };
         if fresh.preset.name != cached.preset.name {
             ui.status
                 .set_label("Selected user preset changed identity; select it again");
-            return;
+            return false;
+        }
+        if let Some(index) = state
+            .borrow()
+            .preset_entries
+            .iter()
+            .position(|entry| entry.path == fresh.path)
+        {
+            applied_selection = STARTER_LOOKS.len() + 1 + index;
         }
         Some(fresh)
     } else {
@@ -1288,29 +1746,27 @@ fn apply_preset_selection(ui: &Rc<Ui>, state: &Rc<RefCell<State>>, selected: usi
     } else if let Some(entry) = user_preset {
         entry.preset.recipe()
     } else {
-        return;
+        return false;
     };
-    if !submit_session_edit(
+    if !apply_preset_recipe(
         ui,
         state,
-        EditCommand::ReplaceRecipe(recipe),
-        None,
+        recipe,
+        Some(applied_selection),
         "Preset applied — updating preview…",
     ) {
-        ui.status.set_label("Preset already matches this document");
-        return;
+        return false;
     }
-    {
-        let mut current = state.borrow_mut();
-        current.sampling = None;
-        current.sampling_previous_mode = None;
-    }
-    ui.syncing.set(true);
-    ui.preset_dropdown.set_selected(applied_selection as u32);
-    ui.syncing.set(false);
-    update_preset_info(ui, state);
-    sync_recipe_controls(ui, state);
-    refresh_voronoi_ui(ui, state);
+    true
+}
+
+fn apply_loaded_preset(
+    ui: &Rc<Ui>,
+    state: &Rc<RefCell<State>>,
+    preset: Preset,
+) {
+    let message = format!("Loaded {} — updating preview…", preset.name);
+    apply_preset_recipe(ui, state, preset.recipe(), None, &message);
 }
 
 fn creative_history_step(ui: &Rc<Ui>, state: &Rc<RefCell<State>>, redo: bool) {
@@ -1393,6 +1849,9 @@ fn present_preset_error(ui: &Ui, heading: &str, error: &anyhow::Error) {
 }
 
 fn present_save_preset(ui: &Rc<Ui>, state: &Rc<RefCell<State>>) {
+    if !preset_actions_allowed(ui, state) {
+        return;
+    }
     let Some(recipe) = state
         .borrow()
         .session
@@ -1403,6 +1862,7 @@ fn present_save_preset(ui: &Rc<Ui>, state: &Rc<RefCell<State>>) {
             .set_label("Open a document before saving a preset");
         return;
     };
+    set_preset_dialog_open(ui, state, true);
     let name = gtk::Entry::builder()
         .placeholder_text("Preset name")
         .hexpand(true)
@@ -1456,10 +1916,12 @@ fn present_save_preset(ui: &Rc<Ui>, state: &Rc<RefCell<State>>) {
     *ui.audit_preset_save.borrow_mut() = Some(save.clone());
     {
         let ui = ui.clone();
+        let state = state.clone();
         dialog.connect_close_request(move |_| {
             *ui.audit_preset_name.borrow_mut() = None;
             *ui.audit_preset_cancel.borrow_mut() = None;
             *ui.audit_preset_save.borrow_mut() = None;
+            set_preset_dialog_open(&ui, &state, false);
             glib::Propagation::Proceed
         });
     }
@@ -1540,6 +2002,38 @@ fn present_save_preset(ui: &Rc<Ui>, state: &Rc<RefCell<State>>) {
     name.grab_focus();
 }
 
+fn present_preset_selector(ui: &Rc<Ui>, state: &Rc<RefCell<State>>) {
+    if !preset_actions_allowed(ui, state) {
+        return;
+    }
+    *ui.preset_dialog_previous_selection.borrow_mut() = preset_selection_identity(
+        ui.preset_dropdown.selected() as usize,
+        &state.borrow().preset_entries,
+    );
+    ui.preset_dialog_applied.set(false);
+    set_preset_dialog_open(ui, state, true);
+    refresh_preset_ui(ui, state, true);
+    ui.preset_apply
+        .set_sensitive(ui.preset_dropdown.selected() != 0);
+    ui.preset_dialog.present();
+}
+
+fn open_preset_folder(ui: &Ui) {
+    match PresetStore::system().prepare_directory() {
+        Ok(path) => {
+            let file = gio::File::for_path(path);
+            if let Err(error) = gio::AppInfo::launch_default_for_uri(
+                &file.uri(),
+                None::<&gio::AppLaunchContext>,
+            ) {
+                ui.status
+                    .set_label(&format!("Could not open preset folder: {error}"));
+            }
+        }
+        Err(error) => present_preset_error(ui, "Could not prepare preset folder", &error),
+    }
+}
+
 fn preset_controls(ui: &Rc<Ui>, state: Rc<RefCell<State>>) {
     refresh_preset_ui(ui, &state, false);
     {
@@ -1552,13 +2046,54 @@ fn preset_controls(ui: &Rc<Ui>, state: Rc<RefCell<State>>) {
                     return;
                 }
                 let selected = dropdown.selected();
-                if selected == gtk::INVALID_LIST_POSITION {
-                    update_preset_info(&ui, &state);
-                    return;
-                }
                 update_preset_info(&ui, &state);
-                apply_preset_selection(&ui, &state, selected as usize);
+                ui.preset_apply
+                    .set_sensitive(selected != gtk::INVALID_LIST_POSITION && selected != 0);
             });
+    }
+    {
+        let ui = ui.clone();
+        let state = state.clone();
+        ui.preset_apply.clone().connect_clicked(move |_| {
+            let selected = ui.preset_dropdown.selected();
+            if selected == gtk::INVALID_LIST_POSITION || selected == 0 {
+                return;
+            }
+            let available = {
+                let current = state.borrow();
+                current.session.document().is_some()
+                    && !current.jobs.is_busy()
+                    && !current.picker_visible
+            };
+            if !available {
+                return;
+            }
+            if apply_preset_selection(&ui, &state, selected as usize) {
+                ui.preset_dialog_applied.set(true);
+                ui.preset_dialog.close();
+            }
+        });
+    }
+    {
+        let ui = ui.clone();
+        let state = state.clone();
+        let dialog = ui.preset_dialog.clone();
+        dialog.connect_close_request(move |_| {
+            if !ui.preset_dialog_applied.replace(false) {
+                let previous = preset_selection_index(
+                    ui.preset_dialog_previous_selection.borrow().as_ref(),
+                    &state.borrow().preset_entries,
+                )
+                .unwrap_or(0) as u32;
+                ui.syncing.set(true);
+                ui.preset_dropdown.set_selected(previous);
+                ui.syncing.set(false);
+                update_preset_info(&ui, &state);
+                ui.preset_apply.set_sensitive(previous != 0);
+            }
+            set_preset_dialog_open(&ui, &state, false);
+            glib::Propagation::Proceed
+        });
     }
     {
         let ui = ui.clone();
@@ -1569,29 +2104,9 @@ fn preset_controls(ui: &Rc<Ui>, state: Rc<RefCell<State>>) {
     }
     {
         let ui = ui.clone();
-        let state = state.clone();
-        ui.preset_save.clone().connect_clicked(move |_| {
-            refresh_preset_ui(&ui, &state, false);
-            present_save_preset(&ui, &state);
-        });
-    }
-    {
-        let ui = ui.clone();
-        ui.preset_folder.clone().connect_clicked(move |_| {
-            match PresetStore::system().prepare_directory() {
-                Ok(path) => {
-                    let file = gio::File::for_path(path);
-                    if let Err(error) = gio::AppInfo::launch_default_for_uri(
-                        &file.uri(),
-                        None::<&gio::AppLaunchContext>,
-                    ) {
-                        ui.status
-                            .set_label(&format!("Could not open preset folder: {error}"));
-                    }
-                }
-                Err(error) => present_preset_error(&ui, "Could not prepare preset folder", &error),
-            }
-        });
+        ui.preset_folder
+            .clone()
+            .connect_clicked(move |_| open_preset_folder(&ui));
     }
 }
 
@@ -1740,15 +2255,22 @@ fn close_guard(window: &gtk::ApplicationWindow, state: Rc<RefCell<State>>) {
 mod tests {
     use super::{
         CANVAS_NATURAL_HEIGHT, CANVAS_NATURAL_WIDTH, CREATIVE_FOCUS_CLASS, CanvasSiteAction, Cli,
-        PickerGesture, PickerLocalHistory, VORONOI_MATCHING_LABELS, accessible_site_label,
+        PickerGesture, PickerLocalHistory, STARTER_LOOKS, VORONOI_MATCHING_LABELS,
+        accessible_site_label,
         application_flags, canvas_site_action, contextual_chrome, divider_from_canvas_x,
-        marker_hit_test, picker_lightness_sequence, picker_plane_encoded_sample,
-        picker_plane_physical_size, selected_user_preset_index, site_label, split_divider_hit,
-        unified_preset_labels, visible_voronoi_matching_at, visible_voronoi_matching_index,
+        embedded_example_pixbuf, example, marker_hit_test, picker_lightness_sequence,
+        picker_plane_encoded_sample,
+        picker_plane_physical_size, preset_selection_identity, preset_selection_index,
+        selected_user_preset_index, site_label, split_divider_hit, unified_preset_labels,
+        visible_voronoi_matching_at, visible_voronoi_matching_index,
+        workspace_can_preserve_inspector_width, workspace_split_bounds,
+        workspace_split_position_for_inspector_width,
     };
+    use std::path::PathBuf;
     use chromiator::{
         color::{ColorModel, DraftColor},
-        document::VoronoiMatching,
+        document::{Recipe, VoronoiMatching},
+        preset::{Preset, PresetEntry},
     };
 
     #[test]
@@ -1800,6 +2322,23 @@ mod tests {
     }
 
     #[test]
+    fn preset_selection_restore_tracks_user_path_when_scan_order_changes() {
+        let entry = |path: &str, name: &str| PresetEntry {
+            path: PathBuf::from(path),
+            preset: Preset::new(name, None, &Recipe::default()).unwrap(),
+        };
+        let initial = [entry("a.json", "Alpha"), entry("b.json", "Beta")];
+        let identity = preset_selection_identity(STARTER_LOOKS.len() + 2, &initial).unwrap();
+        let reordered = [entry("b.json", "Beta"), entry("a.json", "Alpha")];
+
+        assert_eq!(
+            preset_selection_index(Some(&identity), &reordered),
+            Some(STARTER_LOOKS.len() + 1)
+        );
+        assert_eq!(preset_selection_index(Some(&identity), &reordered[1..]), None);
+    }
+
+    #[test]
     fn contextual_chrome_hides_document_tools_on_welcome_but_shows_busy_feedback() {
         let welcome = contextual_chrome(false, false);
         assert!(!welcome.document_actions);
@@ -1821,6 +2360,17 @@ mod tests {
     fn adaptive_canvas_keeps_a_small_natural_request_and_standard_focus_class() {
         assert_eq!((CANVAS_NATURAL_WIDTH, CANVAS_NATURAL_HEIGHT), (320, 240));
         assert_eq!(CREATIVE_FOCUS_CLASS, "creative-focus");
+    }
+
+    #[test]
+    fn workspace_split_bounds_keep_canvas_and_right_inspector_minima_visible() {
+        assert_eq!(workspace_split_bounds(1024, 12), (344, 652));
+        assert_eq!(workspace_split_bounds(716, 12), (344, 344));
+        assert_eq!(workspace_split_bounds(1024, 18), (344, 646));
+        assert_eq!(workspace_split_position_for_inspector_width(1024, 512, 12), 500);
+        assert_eq!(workspace_split_position_for_inspector_width(1180, 512, 12), 656);
+        assert!(!workspace_can_preserve_inspector_width(716, 512));
+        assert!(workspace_can_preserve_inspector_width(1180, 512));
     }
 
     #[test]
@@ -1896,7 +2446,7 @@ mod tests {
         let user = chromiator::preset::PresetEntry {
             path: std::path::PathBuf::from("user.json"),
             preset: chromiator::preset::Preset::new(
-                "My Look",
+                "Ink & Paper",
                 None,
                 &chromiator::document::Recipe::default(),
             )
@@ -1905,7 +2455,7 @@ mod tests {
         assert_eq!(
             unified_preset_labels(&[user]),
             [
-                "Presets…",
+                "Choose a preset…",
                 "Ink & Paper",
                 "Desert Dusk",
                 "Blueprint",
@@ -1925,8 +2475,27 @@ mod tests {
                 "Risograph",
                 "Smudged Graphite",
                 "Watercolor",
-                "My Look",
+                "Ink & Paper (Personal)",
             ]
         );
+    }
+
+    #[test]
+    fn malformed_optional_welcome_art_is_omitted() {
+        assert!(embedded_example_pixbuf(b"not a raster image").is_none());
+    }
+
+    #[test]
+    fn embedded_welcome_art_decodes_without_gtk_initialization() {
+        let decoded = embedded_example_pixbuf(example::SPECTRUM_BYTES)
+            .expect("released embedded welcome artwork should decode");
+        assert_eq!(decoded.width(), 1254);
+        assert_eq!(decoded.height(), 1254);
+        assert!(decoded.has_alpha());
+        let expected = image::load_from_memory(example::SPECTRUM_BYTES)
+            .unwrap()
+            .to_rgba8()
+            .into_raw();
+        assert_eq!(decoded.read_pixel_bytes().as_ref(), expected.as_slice());
     }
 }
