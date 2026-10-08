@@ -1,9 +1,14 @@
 # Chromiator
 
-**Linux downloads:** [Chromiator 0.2.0 preview](https://github.com/ricperry/Chromiator/releases/tag/v0.2.0)
-provides x86_64 AppImage and Flatpak packages, source, license notices, and
-checksums. This is a pre-alpha release; see the release notes for installation
-instructions and compatibility limits.
+**Linux downloads:** [Chromiator 0.3.0 preview — publication pending](https://github.com/ricperry/Chromiator/releases/tag/v0.3.0).
+The pre-alpha release is being prepared with x86_64 AppImage and Flatpak
+packages, source, license notices, and checksums. See the [release notes](docs/RELEASE_0.3.0.md)
+for what's new and compatibility limits.
+
+The 0.3.0 packages are not available until their final build and runtime checks
+are complete. The [0.2.0 preview](https://github.com/ricperry/Chromiator/releases/tag/v0.2.0)
+remains the latest published release in the meantime; see
+[distribution details](docs/DISTRIBUTION.md) for package evidence.
 
 Chromiator is an artist-directed perceptual color-space partitioning and remapping
 application for Linux. It uses editable Voronoi sites in color space to simplify,
@@ -69,6 +74,9 @@ add sites on normal-sized images.
 **Source** displays the original image. **Result** displays the processed image.
 **Split** displays Result on the left and Source on the right; drag the divider
 to reveal either side. Hide the adjustments panel when you want more canvas space.
+With adjustments hidden, Save, Undo, and Redo move into the Document menu so the
+window can shrink to its 600 px compact minimum; showing the panel restores the
+toolbar controls and the wider workspace minimum.
 
 Click visible artwork to create a site from that color. A Source sample attaches
 to the original image; a Result sample uses the processed color and is detached.

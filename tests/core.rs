@@ -1484,16 +1484,23 @@ fn full_source_scheduler_preview_matches_png8_export_downsample_for_all_sigma_pa
         let expected_generation = scheduler.schedule(source.clone(), recipe.clone());
         let start = Instant::now();
         let preview = loop {
-            if let Some(result) = scheduler.try_latest() {
-                if result.generation == expected_generation {
-                    break result;
-                }
+            if let Some(result) = scheduler.try_latest()
+                && result.generation == expected_generation
+            {
+                break result;
             }
-            assert!(start.elapsed() < Duration::from_secs(10), "preview timed out at σ={sigma}");
+            assert!(
+                start.elapsed() < Duration::from_secs(10),
+                "preview timed out at σ={sigma}"
+            );
             std::thread::sleep(Duration::from_millis(2));
         };
         assert_eq!(preview.coverage, full_coverage, "coverage at σ={sigma}");
-        assert_eq!(preview.image, bounded_preview(&full), "float result at σ={sigma}");
+        assert_eq!(
+            preview.image,
+            bounded_preview(&full),
+            "float result at σ={sigma}"
+        );
         assert_eq!(preview.image.width, 1600);
         assert_eq!(preview.image.height, 25);
         let display = to_display_rgba8(&preview.image);
@@ -1524,6 +1531,362 @@ fn full_source_scheduler_preview_matches_png8_export_downsample_for_all_sigma_pa
             assert_eq!(initial_coverage, preview.coverage);
         }
     }
+}
+
+#[test]
+#[ignore = "requires source, saved project, and PNG8 paths from the native workflow run"]
+fn verify_native_workflow_source_project_export_artifacts() {
+    let source_path = std::env::var_os("CHROMIATOR_WORKFLOW_SOURCE")
+        .expect("set CHROMIATOR_WORKFLOW_SOURCE to the imported raster path");
+    let project_path = std::env::var_os("CHROMIATOR_WORKFLOW_PROJECT")
+        .expect("set CHROMIATOR_WORKFLOW_PROJECT to the saved .chromiator path");
+    let export_path = std::env::var_os("CHROMIATOR_WORKFLOW_EXPORT")
+        .expect("set CHROMIATOR_WORKFLOW_EXPORT to the native PNG8 export path");
+
+    let source_bytes = fs::read(source_path).unwrap();
+    let reopened = project::open(Path::new(&project_path)).unwrap();
+    assert_eq!(reopened.source_bytes.as_ref(), source_bytes.as_slice());
+    assert!(!reopened.recipe.voronoi.sites.is_empty());
+
+    let full = process(&reopened.source, &reopened.recipe);
+    let expected = to_display_rgba8(&full);
+    let exported = image::open(export_path).unwrap().to_rgba8();
+    assert_eq!(exported.dimensions(), (full.width, full.height));
+    assert_eq!(exported.as_raw(), &expected.bytes);
+
+    let preview = to_display_rgba8(&bounded_preview(&full));
+    for y in 0..preview.height {
+        let source_y = (y as u64 * full.height as u64 / preview.height as u64) as u32;
+        for x in 0..preview.width {
+            let source_x = (x as u64 * full.width as u64 / preview.width as u64) as u32;
+            let preview_offset = ((y * preview.width + x) * 4) as usize;
+            assert_eq!(
+                &preview.bytes[preview_offset..preview_offset + 4],
+                exported.get_pixel(source_x, source_y).0.as_slice(),
+                "saved-project preview/export mismatch at ({x}, {y})"
+            );
+        }
+    }
+    eprintln!(
+        "native workflow artifacts verified: {}x{}, {} sites, sigma {}, exact source/project/export/preview parity",
+        full.width,
+        full.height,
+        reopened.recipe.voronoi.sites.len(),
+        reopened.recipe.preprocessing.input_smoothing
+    );
+}
+
+fn release_readiness_source(width: u32, height: u32) -> chromiator::document::PixelImage {
+    let shades = [
+        [0.08, 0.20, 0.75],
+        [0.78, 0.14, 0.06],
+        [0.08, 0.62, 0.22],
+        [0.93, 0.72, 0.14],
+    ]
+    .map(|color| color.map(srgb_to_linear));
+    let mut pixels = Vec::with_capacity(width as usize * height as usize);
+    for y in 0..height {
+        for x in 0..width {
+            let color = if x % 257 == 0 || y % 193 == 0 {
+                shades[3]
+            } else if x < width / 3 {
+                shades[0]
+            } else if x < width * 2 / 3 {
+                shades[1]
+            } else {
+                shades[2]
+            };
+            let alpha = if (x + y * 7) % 113 == 0 {
+                0.0
+            } else if (x + y * 11) % 29 == 0 {
+                0.35
+            } else {
+                1.0
+            };
+            pixels.push([color[0], color[1], color[2], alpha]);
+        }
+    }
+    chromiator::document::PixelImage::new(width, height, pixels).unwrap()
+}
+
+fn release_readiness_recipe(sigma: f32) -> Recipe {
+    let source_colors = [[0.08, 0.20, 0.75], [0.78, 0.14, 0.06], [0.08, 0.62, 0.22]]
+        .map(|color| color.map(srgb_to_linear));
+    let mut recipe = Recipe::default();
+    recipe.preprocessing.input_smoothing = sigma;
+    recipe.set_hue_degrees(17.0);
+    recipe.voronoi.sites = vec![
+        sample(1, source_colors[0], [0.08, 0.14, 0.94], 0.0),
+        sample(2, source_colors[1], [0.95, 0.18, 0.11], 0.0),
+        sample(3, source_colors[2], [0.12, 0.82, 0.28], 0.0),
+    ];
+    recipe.voronoi.next_site_id = 4;
+    recipe
+}
+
+fn assert_release_test_executable() {
+    let executable = std::env::current_exe().expect("test executable path");
+    assert!(
+        executable
+            .components()
+            .any(|component| component.as_os_str() == "release"),
+        "run this benchmark with --release"
+    );
+}
+
+#[test]
+#[ignore = "release-only 2MP/8MP responsiveness, parity, and cancellation measurements"]
+fn release_large_image_preview_export_and_cancellation_benchmark() {
+    assert_release_test_executable();
+    use std::sync::atomic::Ordering;
+
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("target/validation/release-readiness-20261007/large-image-benchmark");
+    fs::create_dir_all(&root).unwrap();
+    let metrics_path = root.join("metrics.jsonl");
+    let mut metrics = fs::File::create(&metrics_path).unwrap();
+
+    for (width, height) in [(2048_u32, 1024_u32), (4096, 2048)] {
+        let source = release_readiness_source(width, height);
+        let source_bytes = source.pixels.len() * std::mem::size_of::<[f32; 4]>();
+        for sigma in [0.0, 10.0, 11.0, 25.0, MAX_INPUT_SMOOTHING_SIGMA] {
+            let recipe = release_readiness_recipe(sigma);
+            let generation = AtomicU64::new(1);
+
+            let preview_started = Instant::now();
+            let (preview, preview_coverage) =
+                process_preview_cancellable_with_progress_and_coverage(
+                    &source,
+                    &recipe,
+                    1,
+                    &generation,
+                    |_| {},
+                )
+                .unwrap();
+            let preview_ms = preview_started.elapsed().as_secs_f64() * 1000.0;
+
+            let process_started = Instant::now();
+            let (full, full_coverage) = process_cancellable_with_progress_and_coverage(
+                &source,
+                &recipe,
+                1,
+                &generation,
+                |_| {},
+            )
+            .unwrap();
+            let process_ms = process_started.elapsed().as_secs_f64() * 1000.0;
+            assert_eq!(preview_coverage, full_coverage);
+            assert_eq!(preview, bounded_preview(&full));
+
+            let export_path = root.join(format!("{width}x{height}-sigma-{sigma}.png"));
+            let export_started = Instant::now();
+            export::export(&export_path, &full, ExportFormat::Png8).unwrap();
+            let export_ms = export_started.elapsed().as_secs_f64() * 1000.0;
+            let exported = image::open(&export_path).unwrap().to_rgba8();
+            assert_eq!(exported.dimensions(), (width, height));
+            let displayed_preview = to_display_rgba8(&preview);
+            for y in 0..preview.height {
+                let source_y = (y as u64 * height as u64 / preview.height as u64) as u32;
+                for x in 0..preview.width {
+                    let source_x = (x as u64 * width as u64 / preview.width as u64) as u32;
+                    let offset = ((y * preview.width + x) * 4) as usize;
+                    assert_eq!(
+                        &displayed_preview.bytes[offset..offset + 4],
+                        exported.get_pixel(source_x, source_y).0.as_slice(),
+                        "PNG8 export/preview mismatch at {width}x{height}, sigma {sigma}, ({x}, {y})"
+                    );
+                }
+            }
+
+            let metrics_line = serde_json::json!({
+                "kind": "render",
+                "width": width,
+                "height": height,
+                "pixels": width as u64 * height as u64,
+                "sigma_source_px": sigma,
+                "preview_process_and_downsample_ms": preview_ms,
+                "full_process_ms": process_ms,
+                "png8_atomic_export_ms": export_ms,
+                "source_rgba_f32_bytes": source_bytes,
+                "preview_width": preview.width,
+                "preview_height": preview.height,
+                "preview_float_bytes": preview.pixels.len() * std::mem::size_of::<[f32; 4]>(),
+                "parity": "exact float preview/full downsample and PNG8 preview/export samples"
+            });
+            writeln!(metrics, "{metrics_line}").unwrap();
+            eprintln!("{metrics_line}");
+            fs::remove_file(export_path).unwrap();
+        }
+
+        let current = Arc::new(AtomicU64::new(1));
+        let progress_bits = Arc::new(AtomicU64::new(0.0_f64.to_bits()));
+        let worker_current = Arc::clone(&current);
+        let worker_progress_bits = Arc::clone(&progress_bits);
+        let recipe = release_readiness_recipe(MAX_INPUT_SMOOTHING_SIGMA);
+        let worker_source = source.clone();
+        let worker = std::thread::spawn(move || {
+            process_cancellable_with_progress_and_coverage(
+                &worker_source,
+                &recipe,
+                1,
+                &worker_current,
+                |fraction| worker_progress_bits.store(fraction.to_bits(), Ordering::Release),
+            )
+        });
+        let wait_started = Instant::now();
+        let cancel_started = loop {
+            let fraction = f64::from_bits(progress_bits.load(Ordering::Acquire));
+            if fraction >= 0.02 {
+                let started = Instant::now();
+                current.store(2, Ordering::Release);
+                break started;
+            }
+            assert!(
+                wait_started.elapsed() < Duration::from_secs(60),
+                "cancellable 10000px sigma render did not report progress"
+            );
+            std::thread::yield_now();
+        };
+        assert!(worker.join().unwrap().is_none());
+        let cancellation_ms = cancel_started.elapsed().as_secs_f64() * 1000.0;
+        let metrics_line = serde_json::json!({
+            "kind": "cancel",
+            "width": width,
+            "height": height,
+            "pixels": width as u64 * height as u64,
+            "sigma_source_px": MAX_INPUT_SMOOTHING_SIGMA,
+            "progress_at_cancel": f64::from_bits(progress_bits.load(Ordering::Acquire)),
+            "cancel_to_worker_exit_ms": cancellation_ms
+        });
+        writeln!(metrics, "{metrics_line}").unwrap();
+        eprintln!("{metrics_line}");
+    }
+    eprintln!("release benchmark metrics: {}", metrics_path.display());
+}
+
+#[test]
+#[ignore = "run once per CHROMIATOR_BENCH_CASE under /usr/bin/time -v for isolated peak RSS"]
+fn release_large_image_case_peak_rss() {
+    assert_release_test_executable();
+    let case = std::env::var("CHROMIATOR_BENCH_CASE")
+        .expect("set CHROMIATOR_BENCH_CASE to WIDTHxHEIGHT@SIGMA");
+    let (dimensions, sigma) = case
+        .split_once('@')
+        .expect("case format WIDTHxHEIGHT@SIGMA");
+    let (width, height) = dimensions
+        .split_once('x')
+        .expect("case format WIDTHxHEIGHT@SIGMA");
+    let width = width.parse::<u32>().unwrap();
+    let height = height.parse::<u32>().unwrap();
+    let sigma = sigma.parse::<f32>().unwrap();
+    assert_eq!((width, height), (4096, 2048));
+    assert!(sigma == 11.0 || sigma == 25.0);
+
+    let source = release_readiness_source(width, height);
+    let recipe = release_readiness_recipe(sigma);
+    let generation = AtomicU64::new(1);
+    let preview_started = Instant::now();
+    let (preview, preview_coverage) = process_preview_cancellable_with_progress_and_coverage(
+        &source,
+        &recipe,
+        1,
+        &generation,
+        |_| {},
+    )
+    .unwrap();
+    let preview_ms = preview_started.elapsed().as_secs_f64() * 1000.0;
+    let process_started = Instant::now();
+    let (full, full_coverage) =
+        process_cancellable_with_progress_and_coverage(&source, &recipe, 1, &generation, |_| {})
+            .unwrap();
+    let process_ms = process_started.elapsed().as_secs_f64() * 1000.0;
+    assert_eq!(preview_coverage, full_coverage);
+    assert_eq!(preview, bounded_preview(&full));
+
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("target/validation/release-readiness-20261007/large-image-benchmark");
+    fs::create_dir_all(&root).unwrap();
+    let export_path = root.join(format!("isolated-{case}.png"));
+    let export_started = Instant::now();
+    export::export(&export_path, &full, ExportFormat::Png8).unwrap();
+    let export_ms = export_started.elapsed().as_secs_f64() * 1000.0;
+    let exported = image::open(&export_path).unwrap().to_rgba8();
+    let displayed_preview = to_display_rgba8(&preview);
+    for y in 0..preview.height {
+        let source_y = (y as u64 * height as u64 / preview.height as u64) as u32;
+        for x in 0..preview.width {
+            let source_x = (x as u64 * width as u64 / preview.width as u64) as u32;
+            let offset = ((y * preview.width + x) * 4) as usize;
+            assert_eq!(
+                &displayed_preview.bytes[offset..offset + 4],
+                exported.get_pixel(source_x, source_y).0.as_slice()
+            );
+        }
+    }
+    eprintln!(
+        "isolated case {case}: preview={preview_ms:.2}ms process={process_ms:.2}ms export={export_ms:.2}ms; exact preview/export parity"
+    );
+    fs::remove_file(export_path).unwrap();
+}
+
+#[test]
+#[ignore = "release-only in-flight 8MP cancellation followed by a small latest render"]
+fn release_8mp_latest_request_supersedes_running_smoothing_job() {
+    assert_release_test_executable();
+    use std::sync::atomic::Ordering;
+
+    let current = Arc::new(AtomicU64::new(1));
+    let progress_bits = Arc::new(AtomicU64::new(0.0_f64.to_bits()));
+    let worker_current = Arc::clone(&current);
+    let worker_progress_bits = Arc::clone(&progress_bits);
+    let source = release_readiness_source(4096, 2048);
+    let recipe = release_readiness_recipe(MAX_INPUT_SMOOTHING_SIGMA);
+    let worker_source = source.clone();
+    let worker = std::thread::spawn(move || {
+        process_preview_cancellable_with_progress_and_coverage(
+            &worker_source,
+            &recipe,
+            1,
+            &worker_current,
+            |fraction| worker_progress_bits.store(fraction.to_bits(), Ordering::Release),
+        )
+    });
+
+    let wait_started = Instant::now();
+    loop {
+        if f64::from_bits(progress_bits.load(Ordering::Acquire)) >= 0.02 {
+            break;
+        }
+        assert!(
+            wait_started.elapsed() < Duration::from_secs(60),
+            "8MP preview did not report progress"
+        );
+        std::thread::yield_now();
+    }
+
+    let latest_recipe = release_readiness_recipe(0.0);
+    let latest_source = release_readiness_source(512, 256);
+    let replacement_started = Instant::now();
+    current.store(2, Ordering::Release);
+    let latest = process_preview_cancellable_with_progress_and_coverage(
+        &latest_source,
+        &latest_recipe,
+        2,
+        &current,
+        |_| {},
+    )
+    .unwrap();
+    assert!(
+        worker.join().unwrap().is_none(),
+        "superseded 8MP work must cancel"
+    );
+    assert_eq!((latest.0.width, latest.0.height), (512, 256));
+    assert!(latest.1.visible_total > 0);
+    eprintln!(
+        "8MP sigma-10000 supersession: cancel at {:.4} progress; latest 512x256 result ready in {:.2}ms",
+        f64::from_bits(progress_bits.load(Ordering::Acquire)),
+        replacement_started.elapsed().as_secs_f64() * 1000.0
+    );
 }
 
 #[test]
@@ -2413,8 +2776,10 @@ fn generate_auto_palette_diversity_processed_artifact() {
     let root = Path::new("target/validation/auto-palette-diversity");
     let source_bytes = fs::read(root.join("source.png")).unwrap();
     let source = raster::decode(&source_bytes, None).unwrap().pixels;
-    let mut recipe = Recipe::default();
-    recipe.voronoi = auto_initialize(&source, &source);
+    let recipe = Recipe {
+        voronoi: auto_initialize(&source, &source),
+        ..Recipe::default()
+    };
     assert_eq!(recipe.voronoi.sites.len(), 3);
 
     let identity = root.join("after-identity.png");

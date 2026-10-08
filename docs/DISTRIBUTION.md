@@ -1,5 +1,19 @@
 # Building distribution bundles
 
+## Current 0.3.0 checkpoint (2026-10-07)
+
+The 0.3.0 pre-alpha GitHub release targets x86_64 AppImage and Flatpak bundles.
+The user accepted the current implemented application work on 2026-10-07;
+distribution acceptance remains separate from that product decision. Final
+0.3.0 build, package, and runtime results are to be recorded here before
+publication. The 0.2.0 artifact paths, hashes, and workflow evidence below are
+historical and do not transfer to rebuilt 0.3.0 packages.
+
+Both build snapshots now include only
+`assets/examples/SpectrumBreakpoint.png` from the artwork directory. Loose
+artwork, editable `.kra` files, personal projects, and other local assets are
+excluded from AppImage and Flatpak source snapshots.
+
 The [0.2.0 Linux preview](https://github.com/ricperry/Chromiator/releases/tag/v0.2.0)
 was published from checkpoint `7f7f7353ff315c73636e5e3afc7a82ac9e7a37be`.
 Both x86_64 bundles passed six private-Sway audit scenarios each; uploaded
@@ -121,7 +135,7 @@ pre-existing local icon edit copied by the build snapshot. The build-7 candidate
 is superseded; its provenance and failed-attempt history remain historical
 records in `docs/FUNCTIONAL_AUDIT.md`.
 
-### Latest internal candidate (2026-10-07)
+### Previous internal candidate (2026-10-07)
 
 The pinned build produced
 `target/distribution/0.2.0-q93_3i2j/appimage/output/Chromiator-0.2.0-x86_64.AppImage`,
@@ -137,6 +151,11 @@ capture; the corrected audit was run on the completed AppDir and final packaged
 payload. Both final audits report 119 ELF objects, zero errors, and maximum
 GLIBC 2.39 against the 2.41 ceiling. Evidence, source hashes, and logs are under
 `target/distribution/0.2.0-q93_3i2j/appimage/`; no audit was bypassed.
+
+This candidate predates the accepted source-pixel smoothing and preview/export
+parity changes, as well as the later THR-065 layout follow-up. It remains
+package-validation evidence for its captured source snapshot. The replacement
+current-source candidate is documented below.
 
 The clean runtime reproduction used Debian 13.7/glibc 2.41 from the pinned
 Debian 13 base digest, with no compiler, `pkg-config`, GTK development package,
@@ -182,6 +201,80 @@ FUSE and extracted-AppRun launch attempts. Exit status alone does not establish
 GUI, import, save, export, or accessibility success; inspect the window, logs,
 screenshots, and output files separately. It was not used for the 2026-10-07
 candidate checks; manual private-Sway and clean-container procedures were used.
+
+### Superseded source-pixel candidate (2026-10-07)
+
+The pinned build produced
+`target/distribution/0.2.0-zdff2hnm/appimage/output/Chromiator-0.2.0-x86_64.AppImage`,
+29,608,440 bytes, SHA-256
+`2de350f485847f2df97a8991393c6b1e6d009a6d281d5e14d43d2697b41f97e5`. It is
+based on checkpoint `98c28be` plus the retained worktree changes at that build.
+Its captured `src/main.rs` SHA-256 was
+`baff160f12ef8689f96a8560d4ac8238cef02aa2b593b15b5c8ae113d16e8668`.
+That source still used a deferred GtkPaned position clamp and predates the
+held-drag and canvas-corner fixes below. Both the AppDir and packaged-payload audits
+pass for 119 ELF files, zero errors, and maximum GLIBC 2.39 against the 2.41
+baseline. The run and its audits are under
+`target/distribution/0.2.0-zdff2hnm/appimage/`; both the run-level and output
+`SHA256SUMS` checks pass.
+
+Package runtime verification passed in two automated environments. On Fedora's
+isolated GNOME 50.5/Mutter Wayland session, the ordinary FUSE AppImage launched
+without extraction or renderer overrides. AT-SPI readback through the packaged
+`AppRun.wrapped` root found the mapping and five color sites, which remained
+visible after maximize/restore. Portal Open/Cancel and PNG8 Save passed; the
+portal export at
+`target/validation/release-readiness-20261007/gnome/packaged-portal-export.png`
+is byte-identical to the native export. Packaged app stderr was empty.
+`packaged-restored.png` is the maximized capture; `packaged-final-restored.png`
+shows the window restored, both in the same `gnome/` evidence directory.
+
+In the clean Debian 13.7/glibc 2.41 runtime, stock AppRun completed with the
+default renderer and no `GSK_RENDERER` override, compiler, `pkg-config`, host
+Adwaita theme, or launch-time network. The packaged project loaded, exported
+PNG8, saved with Save As, and reopened through the native chooser. The artifact
+verifier confirmed exact embedded source bytes and pixel equality among the
+reopened recipe render, export, and bounded preview samples. Evidence includes
+`target/validation/release-readiness-20261007/clean-debian/packaged-saved.chromiator`,
+`packaged-export.png`, and the private-session capture
+`.codex-work/evidence/ui-run-20261007-212156-527488/packaged-debian-reopened.png`;
+the clean-runtime log records Debian 13.7/glibc 2.41. This Debian project
+workflow and the GNOME portal checks do not represent a full preset/edit/reopen
+workflow on GNOME; that path passed in private Sway and is documented in the
+functional audit. Package AT-SPI was read successfully, but human desktop review
+and user acceptance remain pending.
+
+### Current-source divider-fix candidate (2026-10-07)
+
+The pinned build produced
+`target/distribution/0.2.0-icn3p06p/appimage/output/Chromiator-0.2.0-x86_64.AppImage`,
+29,608,440 bytes, SHA-256
+`aac5f8904f65321b573414656c5ece703054585d0ba0b802ab8c6ee40f4eff69`.
+The captured source matches the final local `src/main.rs`,
+`resources/window.ui`, and `resources/chromiator.css` hashes
+`1debcc5149b9438adee791c23764bbd00062257dac45d80bc207e3e04f10a3d7`,
+`2484316bc9dde9e2d8dc93ece73d89adea3b69e4f43ab8a71bc129e6fa061884`,
+and `1ca80f62e53cb0112880f4d1d76a49be7db55bb798431c53130ccda275e8f6e9`.
+All 22 unrelated worktree file hashes remained unchanged from the preflight
+inventory. The AppDir and extracted package audits each passed with 119 ELF
+files and zero errors
+against the proposed GLIBC 2.41 baseline. Build log and scoped evidence are
+under `target/validation/divider-drag-20261007/`; the two audit JSON files
+are under `target/distribution/0.2.0-icn3p06p/appimage/output/`.
+
+The ordinary FUSE AppImage launched in private Sway, loaded a saved project,
+and exposed the populated Color sites inspector. In the package itself, all
+100 moving, 30 stationary-held, and release divider samples stayed at 1073
+on the right and 346 on the left of the 1438 px pane; raw readback is in
+`packaged-right.json` and `packaged-left.json`. The inspected
+`.codex-work/evidence/ui-run-20261007-222015-660143/packaged-corners.png`
+shows square canvas corners and the populated inspector; packaged stderr was
+empty. The generic app-start helper's default `Chromiator` selector timed out
+because this packaged root is named `AppRun.wrapped`; an explicit selector
+found Color sites and the checks completed. This scoped smoke did not rerun
+the earlier candidate's GNOME portal/export or clean-Debian project workflows.
+Those prior results remain historical evidence for that build. Human desktop
+review and user acceptance remain pending.
 
 ## Flatpak prerequisites
 

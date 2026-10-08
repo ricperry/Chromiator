@@ -99,6 +99,16 @@ Use `--exact` for an exact name and `--role` to constrain the normalized AT-SPI
 role. If more than one node matches, `ui-action` exits 4 and prints candidates;
 choose one with `--index` rather than guessing.
 
+The `ui` helper requires the private session's `AT_SPI_BUS_ADDRESS`. It selects
+the Chromiator application through the AT-SPI registry, then uses public
+`Accessible.GetChildren` snapshots for each live subtree. Indexing within one
+snapshot stays local; do not reintroduce application-root
+`Accessible.GetChildAtIndex` calls. GTK 4.22.5 can serialize a NULL object path
+for a disappearing top-level chooser window on that indexed method. Fresh
+snapshots are needed when a reused dropdown gains popup children after an
+action. The protocol adapter retains canonical libatspi roles and action IDs,
+and Value, Text, Selection, and relation readbacks.
+
 Examples:
 
 ```bash

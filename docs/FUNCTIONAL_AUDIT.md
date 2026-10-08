@@ -2,11 +2,16 @@
 
 ## Status
 
-Final GTK4 conversion: **partially verified, with an open layout regression**.
-The follow-up fixes passed the application build, strict Clippy, and 93 tests.
-Bounded private-Sway checks verified save/history/picker fixes; THR-065 remains open;
-see `BUG_HUNT_FOLLOWUP_2026-09-19.md`. Do not infer complete workflow success from those
-checks or merely implemented audit routes. No performance improvement is claimed.
+The user accepted the current implemented GTK4/Voronoi work on 2026-10-07.
+Automated verification is documented below, with its environment and coverage
+limits. This acceptance does not certify untested desktop or assistive-technology
+configurations, or substitute for the pending 0.3.0 package checks. The follow-up
+fixes passed application builds, strict Clippy, and focused tests. Private-Sway
+checks verified save/history/picker and the integrated workflow. The isolated
+GNOME/Mutter run verified THR-065 maximize/restore, portal open/cancel, and PNG8
+export/source/project readback; it did not repeat the full preset/edit/reopen
+path. See `BUG_HUNT_FOLLOWUP_2026-09-19.md` and the evidence recorded below.
+Large-image timings are synthetic and machine-specific.
 
 ## Planning update (2026-10-03) — Stages 0–1 implementation in progress
 
@@ -255,10 +260,10 @@ application result is claimed. Real GNOME/portal testing and user acceptance
 remain pending; the ignored artifact test uses the native export API and does
 not establish GUI export-chooser behavior.
 
-### Current candidate update (2026-10-07)
+### Previous candidate update (2026-10-07)
 
-THR-071 remains **in progress; human acceptance is pending**. The latest
-candidate is
+THR-071 remains **in progress; human acceptance is pending**. This section
+records the superseded q93 candidate:
 `target/distribution/0.2.0-q93_3i2j/appimage/output/Chromiator-0.2.0-x86_64.AppImage`,
 29,583,864 bytes, SHA-256
 `6919478aa842246f16f871ae254da54d78f35274e6f6c97daeb088ef136b45a5`. It is
@@ -298,14 +303,18 @@ top-level frame; the cause is unconfirmed and is recorded under THR-077.
 Spectrum was selected using the screenshot. The packaged GUI launch succeeded,
 but package AT-SPI readback remains unverified.
 
-All screenshots and workflow artifacts are private-Sway evidence under
+All screenshots and workflow artifacts for the q93 candidate are private-Sway
+evidence under
 `target/distribution/0.2.0-q93_3i2j/appimage/runtime-clean-debian-20261007/`.
+That package snapshot was not tested on GNOME/Mutter or through desktop portals.
+The later isolated GNOME/portal and THR-073 workflow checks used the debug
+application and do not transfer to this older candidate; see the release-
+readiness record below and the prior-candidate record in `docs/DISTRIBUTION.md`.
 Earlier statements that FUSE was unavailable and stock launch lacked
 `libGLESv2.so.2` refer to the superseded build-7 candidate and cloud environment;
-they are historical, not current results. Remaining gates are Fedora
-GNOME/Mutter testing, real desktop-portal behavior, human GUI/accessibility
-acceptance, and the broader THR-073 integrated workflow. The general smoke
-script was not used. No Stage 2 or acceptance decision is implied.
+they are historical, not current results. Human GUI/accessibility acceptance
+and package-specific runtime verification remain separate gates. The general
+smoke script was not used. No Stage 2 or acceptance decision is implied.
 
 ### Evidence at planning time
 
@@ -383,13 +392,93 @@ the ignored `write_source_sigma_visual_fixture` test under
 `ui-run-20261007-192021-355905` opened the σ=25 project, read back σ=10,000,
 verified Undo returned to 25 and Redo to 10,000, and captured an unclipped
 control screenshot with empty stderr. The user accepted this smoothing and
-preview/export parity work on 2026-10-07. At the default divider position,
-1024×768 reproduces the existing THR-065 inspector clipping, recorded
-separately in `ISSUES.md`; after moving the divider to 570, the smoothing
-controls and Color sites are readable (`final-small-adjusted-25.png` in
-`ui-run-20261007-192200-357606`). No layout change is included here. Real-GNOME
-validation remains pending; the released 0.2.0 AppImage has not been rebuilt
-for this change.
+preview/export parity work on 2026-10-07.
+
+Release-readiness checks on 2026-10-07 used optimized synthetic 2048×1024
+(2MP) and 4096×2048 (8MP) sources with fine edges and transparent/partial-alpha
+pixels. `release_large_image_preview_export_and_cancellation_benchmark`
+compared full processing, full-source preview reduction, and PNG8 export at
+σ 0, 10, 11, 25, and 10,000; all bounded float results and sampled PNG8 pixels
+matched exactly. At 8MP, σ=11 took 3,439 ms for preview, 3,430 ms for full
+processing, and 303 ms for PNG8 export; isolated peak RSS was 679,992 KiB.
+At σ=25 the corresponding times were 1,571/1,555/297 ms and peak RSS was
+549,656 KiB. The 8MP σ=10,000 render exited 9.15 ms after cancellation at
+2.00% progress. `release_8mp_latest_request_supersedes_running_smoothing_job`
+cancelled an 8MP σ=10,000 preview at 2.23% and produced the replacement
+512×256 result 15.28 ms later. These are synthetic, machine-specific results,
+not general performance guarantees. Raw JSONL is retained under
+`target/validation/release-readiness-20261007/large-image-benchmark/`.
+
+The same release-readiness stage verified the native workflow from PNG import
+through built-in preset selection, σ edit, Split comparison, PNG8 export,
+project save, and native reopen. The reopened project embedded the exact
+imported source bytes; the saved recipe's full render matched the native export
+and sampled preview pixels exactly. Cancellation and malformed raster/project
+checks preserved the preceding UI state. The ignored verifier is
+`verify_native_workflow_source_project_export_artifacts` in `tests/core.rs`;
+the native project, export, source, and state snapshots are retained under
+`target/validation/release-readiness-20261007/`.
+
+THR-065 was verified on private Sway and automated isolated GNOME 50.5/Mutter.
+The workspace keeps the minimum canvas and right-pinned inspector visible; when
+the inspector is hidden, Save/Undo/Redo move into the Document menu and the
+window can shrink to 600 px. From a 1024 px workspace, the divider was set to
+500; hiding the inspector and shrinking to 600 px, showing it again, and growing
+to 1180 px restored divider position 656 with the selected inspector width
+preserved. A further Sway run clamped extreme drags to 344 and 808 at 1180 px,
+then retained visible, vertically scrollable inspector controls at 716×450.
+Captures are in `.codex-work/evidence/ui-run-20261007-211111-471880/`,
+`ui-run-20261007-211456-488880/`, and
+`ui-run-20261007-212156-527488/`. In isolated GNOME/Mutter, maximize at
+1280×800 and restore at 1144×736 retained mapping and five-site controls. The
+isolated portal open/cancel and PNG8 export/source/project pixel verifier passed;
+artifacts are under `target/validation/release-readiness-20261007/gnome/`, with
+an empty final app log. The focused geometry test, strict Clippy, and build
+passed. These are automated checks, not human GNOME/Mutter or assistive-
+technology acceptance. The current-source AppImage build status is tracked
+separately in `docs/DISTRIBUTION.md`.
+
+A 2026-10-07 held-mouse follow-up exposed a divider oscillation that the
+release-only extreme-position checks above missed. Explicit start/end pane
+properties retain GTK's non-shrink child settings, and the viewer now requests
+its 344 px minimum; position notifications no longer queue an idle clamp during
+dragging. While the window cannot fit the saved inspector width, only actual
+pointer or focused-pane keyboard adjustment can replace it. At 1180 px, the
+previous binary's 100 rightward held samples included
+808, 1117, and 1125 before release returned to 808. The current binary stayed
+at 815 for 100 moving and 30 stationary held samples and on release; leftward
+dragging held and released at 346. The 1024/500 to 1180/656 resize restoration
+still passed. Raw traces are in `target/validation/divider-drag-20261007/`.
+The canvas corners are square in the inspected private-Sway capture
+`.codex-work/evidence/ui-run-20261007-220459-591391/fixed-ready.png`. Human
+GNOME/Mutter acceptance remains pending.
+In the final real-pointer workflow, 1024/500 survived hide, 600 px compact
+resize, show, and growth to 1180/656. A subsequent narrow 800 px window let
+the user deliberately drag to 420, then growth to 1180 px restored 800. The
+focused split test, strict binary Clippy, and debug build passed after the
+input-origin change. On that final rebuild, 100 moving and 30 stationary held
+samples plus release all stayed at 815 on the right and 346 on the left;
+`final-right.json` and `final-left.json` are in the same validation directory.
+The final-source isolated GNOME/Mutter semantic check reported a 1280 px pane
+at position 820 when maximized and a 1144 px pane at position 684 after restore;
+the expanded Color sites control and Site 1 remained available in both
+`gnome/toggled-controls.json` and `gnome/restored-controls.json`. The GNOME
+portal screenshot request returned Response 2 or timed out, so this final pass
+has semantic readback but no GNOME visual capture. The inspected private-Sway
+`ui-run-20261007-221156-624990/final-restored.png` shows the square canvas
+corners and visible inspector. Human GNOME/Mutter visual acceptance remains
+pending.
+
+The final-source AppImage `0.2.0-icn3p06p` passed AppDir and extracted-package
+audits (119 ELF files, zero errors) and launched through normal FUSE in private
+Sway. It loaded the saved project and populated inspector. At a 1438 px pane,
+all 100 moving, 30 stationary-held, and release samples stayed at 1073 on the
+right and 346 on the left (`packaged-right.json` and `packaged-left.json` in
+`target/validation/divider-drag-20261007/`). The inspected private-Sway
+`ui-run-20261007-222015-660143/packaged-corners.png` shows square corners
+and the populated inspector; packaged stderr was empty. This was a scoped
+package smoke. The earlier candidate's clean-Debian project and GNOME portal
+export workflows were not repeated for this package; see `docs/DISTRIBUTION.md`.
 
 ### Stage 1 — P0 package/runtime repair
 
@@ -502,9 +591,11 @@ are correctness evidence only, not performance measurements.
    rejection, monotonic progress, full-resolution export, and atomic writes.
 8. Inspect desktop, 1024x600, and narrow layouts in light and dark themes.
    Check allocated geometry, scrolling, hidden inspector, focus, keyboard paths,
-   canvas add/drag gestures, and Source/Result comparison. Arbitrary live resize
-   does not yet automatically collapse the inspector; manual toggling and
-   narrow automation are present but unverified.
+   canvas add/drag gestures, and Source/Result comparison. THR-065's right-pinned
+   sizing, scrolling, extreme split positions, hide/show, and 600 px compact
+   window behavior passed automated Sway and isolated GNOME/Mutter checks. The
+   inspector remains user-toggled rather than auto-collapsing during resize;
+   broader theme, focus, keyboard, and canvas-gesture review remains open.
 9. Measure release preview and 3840x2160 processing on representative images,
    with repeated warm medians, peak RSS, cancellation latency, and exact output.
    Adopt bounded Rayon only if measurements support it; no speculative
@@ -555,9 +646,9 @@ Focused interactions applied a built-in and an XDG personal preset, verified
 Undo availability, cancelled and reopened the selector, loaded Arcade Four
 JSON, and saved matching processing JSON at
 `/tmp/chromiator-preset-menu-check/data/chromiator/presets/preset-4824c10d7b76b422.json`.
-The narrow capture used a semantic pane adjustment to position 610; default
-splitter placement remains tracked by THR-065. The `.chromiator` file chooser
-flow was not independently verified.
+The narrow capture used a semantic pane adjustment to position 610; THR-065
+layout enforcement was later verified separately. The `.chromiator` file
+chooser flow was not independently verified in this preset-menu check.
 
 The earlier blanket semantic readback crashed around dynamic widget removal.
 The retained gdb trace at

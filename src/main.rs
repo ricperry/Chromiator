@@ -65,6 +65,218 @@ const VORONOI_MATCHING_LABELS: &[&str] = &["Perceptual (OKLab)", "RGB (sRGB)", "
 const CREATIVE_FOCUS_CLASS: &str = "creative-focus";
 const CANVAS_NATURAL_WIDTH: i32 = 320;
 const CANVAS_NATURAL_HEIGHT: i32 = 240;
+const WORKSPACE_VIEWER_MIN_WIDTH: i32 = CANVAS_NATURAL_WIDTH + 24;
+const WORKSPACE_INSPECTOR_MIN_WIDTH: i32 = 360;
+const WORKSPACE_HANDLE_MIN_WIDTH: i32 = 12;
+const WORKSPACE_WINDOW_MIN_COMPACT_WIDTH: i32 = 600;
+
+fn workspace_split_bounds(width: i32, handle_width: i32) -> (i32, i32) {
+    let minimum_position = WORKSPACE_VIEWER_MIN_WIDTH;
+    let maximum_position = (width - WORKSPACE_INSPECTOR_MIN_WIDTH - handle_width.max(1))
+    .max(minimum_position);
+    (minimum_position, maximum_position)
+}
+
+fn workspace_split_position_for_inspector_width(
+    width: i32,
+    inspector_width: i32,
+    handle_width: i32,
+) -> i32 {
+    let (minimum, maximum) = workspace_split_bounds(width, handle_width);
+    (width - inspector_width - handle_width).clamp(minimum, maximum)
+}
+
+fn workspace_can_preserve_inspector_width(width: i32, inspector_width: i32) -> bool {
+    width - WORKSPACE_VIEWER_MIN_WIDTH - WORKSPACE_HANDLE_MIN_WIDTH >= inspector_width
+}
+
+#[derive(Clone, Copy, Default)]
+struct WorkspaceSplitMemory {
+    width: i32,
+    preferred_inspector_width: i32,
+    visible: bool,
+}
+
+fn connect_workspace_sizing(
+    window: &gtk::ApplicationWindow,
+    stack: &gtk::Stack,
+    paned: &gtk::Paned,
+    inspector: &gtk::ScrolledWindow,
+    compact_header_controls: &[gtk::Widget],
+) {
+    let compact_header_controls: Vec<_> = compact_header_controls
+        .iter()
+        .map(|widget| widget.downgrade())
+        .collect();
+    let split_memory = Rc::new(Cell::new(WorkspaceSplitMemory::default()));
+    let adjusting_position = Rc::new(Cell::new(false));
+    let pointer_adjusting = Rc::new(Cell::new(false));
+    let key_adjusting = Rc::new(Cell::new(false));
+    let input = gtk::EventControllerLegacy::new();
+    input.set_propagation_phase(gtk::PropagationPhase::Capture);
+    {
+        let paned = paned.downgrade();
+        let pointer_adjusting = pointer_adjusting.clone();
+        let key_adjusting = key_adjusting.clone();
+        input.connect_event(move |_, event| {
+            match event.event_type() {
+                gtk::gdk::EventType::ButtonPress | gtk::gdk::EventType::ButtonRelease
+                    if event
+                        .downcast_ref::<gtk::gdk::ButtonEvent>()
+                        .is_some_and(|button| button.button() == 1) =>
+                {
+                    if event.event_type() == gtk::gdk::EventType::ButtonPress {
+                        pointer_adjusting.set(true);
+                    } else {
+                        let pointer_adjusting = pointer_adjusting.clone();
+                        glib::idle_add_local_once(move || pointer_adjusting.set(false));
+                    }
+                }
+                gtk::gdk::EventType::KeyPress
+                    if paned.upgrade().is_some_and(|paned| paned.has_focus()) =>
+                {
+                    key_adjusting.set(true);
+                    let key_adjusting = key_adjusting.clone();
+                    glib::idle_add_local_once(move || key_adjusting.set(false));
+                }
+                _ => {}
+            }
+            glib::Propagation::Proceed
+        });
+    }
+    paned.add_controller(input);
+    let update = Rc::new({
+        let window = window.downgrade();
+        let stack = stack.downgrade();
+        let paned = paned.downgrade();
+        let inspector = inspector.downgrade();
+        let compact_header_controls = compact_header_controls.clone();
+        let split_memory = split_memory.clone();
+        let adjusting_position = adjusting_position.clone();
+        move || {
+            let (Some(window), Some(stack), Some(paned), Some(inspector)) = (
+                window.upgrade(),
+                stack.upgrade(),
+                paned.upgrade(),
+                inspector.upgrade(),
+            ) else {
+                return;
+            };
+            let document_page = stack.visible_child_name().as_deref() == Some("document");
+            let inspector_visible = document_page && inspector.is_visible();
+            let minimum_width = if !document_page {
+                -1
+            } else if inspector_visible {
+                WORKSPACE_VIEWER_MIN_WIDTH
+                    + WORKSPACE_INSPECTOR_MIN_WIDTH
+                    + WORKSPACE_HANDLE_MIN_WIDTH
+            } else {
+                WORKSPACE_WINDOW_MIN_COMPACT_WIDTH
+            };
+            if window.width_request() != minimum_width {
+                window.set_size_request(minimum_width, -1);
+            }
+            for control in &compact_header_controls {
+                if let Some(control) = control.upgrade() {
+                    control.set_visible(document_page && inspector_visible);
+                }
+            }
+            let mut memory = split_memory.get();
+            if !inspector_visible {
+                memory.visible = false;
+                split_memory.set(memory);
+                return;
+            }
+            if !paned.is_mapped() || paned.width() <= 0 {
+                return;
+            }
+
+            let width = paned.width();
+            let handle_width = WORKSPACE_HANDLE_MIN_WIDTH;
+            let preserve_inspector_width = memory.preferred_inspector_width > 0
+                && (!memory.visible || (memory.width > 0 && memory.width != width));
+            let desired_position = if preserve_inspector_width {
+                workspace_split_position_for_inspector_width(
+                    width,
+                    memory.preferred_inspector_width,
+                    handle_width,
+                )
+            } else {
+                paned.position()
+            };
+            let (minimum, maximum) = workspace_split_bounds(width, handle_width);
+            let position = desired_position.clamp(minimum, maximum);
+            memory.width = width;
+            if memory.preferred_inspector_width <= 0 {
+                memory.preferred_inspector_width = width - position - handle_width;
+            }
+            memory.visible = true;
+            split_memory.set(memory);
+            if position != paned.position() {
+                adjusting_position.set(true);
+                paned.set_position(position);
+                adjusting_position.set(false);
+            }
+        }
+    });
+    let queue_update: Rc<dyn Fn()> = Rc::new({
+        let update = update.clone();
+        move || {
+            let update = update.clone();
+            glib::idle_add_local_once(move || update());
+        }
+    });
+
+    let changed = update.clone();
+    let queued = queue_update.clone();
+    stack.connect_visible_child_notify(move |_| {
+        changed();
+        queued();
+    });
+    let changed = update.clone();
+    let queued = queue_update.clone();
+    inspector.connect_visible_notify(move |_| {
+        changed();
+        queued();
+    });
+    let queued = queue_update.clone();
+    paned.connect_map(move |_| queued());
+    let queued = queue_update.clone();
+    paned.connect_max_position_notify(move |_| queued());
+    let queued = queue_update.clone();
+    paned.connect_min_position_notify(move |_| queued());
+    let split_memory = split_memory.clone();
+    let adjusting_position = adjusting_position.clone();
+    let pointer_adjusting = pointer_adjusting.clone();
+    let key_adjusting = key_adjusting.clone();
+    paned.connect_position_notify(move |paned| {
+        let memory = split_memory.get();
+        if !adjusting_position.get()
+            && paned.is_mapped()
+            && memory.visible
+            && memory.width == paned.width()
+            && (workspace_can_preserve_inspector_width(
+                paned.width(),
+                memory.preferred_inspector_width,
+            ) || pointer_adjusting.get()
+                || key_adjusting.get())
+        {
+            let width = paned.width();
+            let handle_width = WORKSPACE_HANDLE_MIN_WIDTH;
+            let preferred_inspector_width = width - paned.position() - handle_width;
+            if preferred_inspector_width > 0 {
+                split_memory.set(WorkspaceSplitMemory {
+                    preferred_inspector_width,
+                    ..memory
+                });
+            }
+        }
+        // The paned's native child minima constrain an active drag. Position
+        // notifications only record the user's chosen inspector width; size
+        // and visibility changes restore it through the queued update above.
+    });
+    update();
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct ContextualChrome {
@@ -390,7 +602,10 @@ fn build(app: &gtk::Application, cli: Cli) {
     let export = shell.export_button();
     let document_menu_model = gio::Menu::new();
     document_menu_model.append(Some("Open Project…"), Some("app.open-project"));
+    document_menu_model.append(Some("Save Project"), Some("app.save"));
     document_menu_model.append(Some("Save Project As…"), Some("app.save-as"));
+    document_menu_model.append(Some("Undo"), Some("app.creative-undo"));
+    document_menu_model.append(Some("Redo"), Some("app.creative-redo"));
     document_menu_model.append(Some("Export Image…"), Some("app.export"));
     let document_menu = shell.document_menu();
     document_menu.set_menu_model(Some(&document_menu_model));
@@ -499,6 +714,21 @@ fn build(app: &gtk::Application, cli: Cli) {
     empty_project.bind_property("sensitive", &recent_projects, "sensitive").sync_create().build();
     let stack = shell.page_stack();
     stack.set_visible_child_name("empty");
+    let workspace_split = shell.split();
+    let compact_header_controls: [gtk::Widget; 5] = [
+        save.clone().upcast(),
+        undo.clone().upcast(),
+        redo.clone().upcast(),
+        file_spacer.clone().upcast(),
+        history_spacer.clone().upcast(),
+    ];
+    connect_workspace_sizing(
+        &window,
+        &stack,
+        &workspace_split,
+        &inspector_scroll,
+        &compact_header_controls,
+    );
     let progress = shell.progress();
     progress.update_property(&[
         gtk::accessible::Property::Label("Operation progress"),
@@ -963,19 +1193,20 @@ fn sync_contextual_chrome(ui: &Ui, state: &Rc<RefCell<State>>) {
     if let Some(titlebar) = ui.window.titlebar() {
         titlebar.set_visible(state.session.document().is_some());
     }
-    for widget in [
-        ui.open.clone().upcast::<gtk::Widget>(),
-        ui.save.clone().upcast(),
-        ui.undo.clone().upcast(),
-        ui.redo.clone().upcast(),
-        ui.export.clone().upcast(),
-        ui.sidebar_button.clone().upcast(),
-        ui.document_menu.clone().upcast(),
-        ui.presets_menu.clone().upcast(),
-        ui.file_spacer.clone().upcast(),
-        ui.history_spacer.clone().upcast(),
+    let compact_header = chrome.document_actions && !ui.inspector_scroll.is_visible();
+    for (widget, compact_only) in [
+        (ui.open.clone().upcast::<gtk::Widget>(), false),
+        (ui.save.clone().upcast(), true),
+        (ui.undo.clone().upcast(), true),
+        (ui.redo.clone().upcast(), true),
+        (ui.export.clone().upcast(), false),
+        (ui.sidebar_button.clone().upcast(), false),
+        (ui.document_menu.clone().upcast(), false),
+        (ui.presets_menu.clone().upcast(), false),
+        (ui.file_spacer.clone().upcast(), true),
+        (ui.history_spacer.clone().upcast(), true),
     ] {
-        widget.set_visible(chrome.document_actions);
+        widget.set_visible(chrome.document_actions && !(compact_header && compact_only));
     }
     let presets_enabled = state.session.document().is_some()
         && !state.jobs.is_busy()
@@ -2032,6 +2263,8 @@ mod tests {
         picker_plane_physical_size, preset_selection_identity, preset_selection_index,
         selected_user_preset_index, site_label, split_divider_hit, unified_preset_labels,
         visible_voronoi_matching_at, visible_voronoi_matching_index,
+        workspace_can_preserve_inspector_width, workspace_split_bounds,
+        workspace_split_position_for_inspector_width,
     };
     use std::path::PathBuf;
     use chromiator::{
@@ -2127,6 +2360,17 @@ mod tests {
     fn adaptive_canvas_keeps_a_small_natural_request_and_standard_focus_class() {
         assert_eq!((CANVAS_NATURAL_WIDTH, CANVAS_NATURAL_HEIGHT), (320, 240));
         assert_eq!(CREATIVE_FOCUS_CLASS, "creative-focus");
+    }
+
+    #[test]
+    fn workspace_split_bounds_keep_canvas_and_right_inspector_minima_visible() {
+        assert_eq!(workspace_split_bounds(1024, 12), (344, 652));
+        assert_eq!(workspace_split_bounds(716, 12), (344, 344));
+        assert_eq!(workspace_split_bounds(1024, 18), (344, 646));
+        assert_eq!(workspace_split_position_for_inspector_width(1024, 512, 12), 500);
+        assert_eq!(workspace_split_position_for_inspector_width(1180, 512, 12), 656);
+        assert!(!workspace_can_preserve_inspector_width(716, 512));
+        assert!(workspace_can_preserve_inspector_width(1180, 512));
     }
 
     #[test]

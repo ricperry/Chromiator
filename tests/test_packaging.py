@@ -27,6 +27,27 @@ build = load_script("build_distributions")
 
 
 class RuntimeInputTests(unittest.TestCase):
+    def test_embedded_asset_snapshot_contains_only_spectrum_example(self):
+        with tempfile.TemporaryDirectory() as location:
+            root = Path(location)
+            artwork = root / "repository/assets"
+            (artwork / "examples").mkdir(parents=True)
+            (artwork / "examples/SpectrumBreakpoint.png").write_bytes(b"spectrum")
+            (artwork / "SplashMockup.png").write_bytes(b"user artwork")
+            (artwork / "SplashMockup.kra").write_bytes(b"editable artwork")
+            (artwork / "personal.chromiator").write_bytes(b"user project")
+            destination = root / "snapshot"
+
+            build.copy_spectrum_example(destination, repository=root / "repository")
+
+            copied = destination / "assets"
+            self.assertEqual(
+                sorted(path.relative_to(copied).as_posix() for path in copied.rglob("*")),
+                ["examples", "examples/SpectrumBreakpoint.png"],
+            )
+            self.assertEqual(
+                (copied / "examples/SpectrumBreakpoint.png").read_bytes(), b"spectrum")
+
     def test_bundle_adwaita_theme_and_copyright(self):
         with tempfile.TemporaryDirectory() as location:
             root = Path(location)

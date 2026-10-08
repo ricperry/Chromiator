@@ -79,6 +79,13 @@ def install_metadata(prefix):
     shutil.copytree(ROOT / "licenses", notices / "licenses")
 
 
+def copy_spectrum_example(source_snapshot, repository=ROOT):
+    """Include only the built-in example, never loose user artwork."""
+    example = Path(source_snapshot) / "assets/examples"
+    example.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(Path(repository) / "assets/examples/SpectrumBreakpoint.png", example)
+
+
 def bundle_adwaita_icons(appdir, source=Path("/usr/share/icons/Adwaita"),
                          copyright_file=Path("/usr/share/doc/adwaita-icon-theme/copyright")):
     """Bundle GTK's named symbolic icons and their package copyright notice."""
@@ -107,9 +114,7 @@ def appimage_snapshot(source):
         shutil.copy2(ROOT / "packaging" / name, source / "packaging" / name)
     (source / "packaging/appimage").mkdir()
     shutil.copy2(APPIMAGE_LOCK, source / "packaging/appimage/build-lock.json")
-    example = source / "assets/examples"
-    example.mkdir(parents=True)
-    shutil.copy2(ROOT / "assets/examples/SpectrumBreakpoint.png", example)
+    copy_spectrum_example(source)
     scripts = source / "scripts"
     scripts.mkdir()
     for name in ["build_distributions.py", "audit_appimage.py", "generate_license_notices.py"]:
@@ -277,16 +282,12 @@ def appimage_inside_builder(work, version, arch, args, lock):
 def flatpak(work, version, arch, args):
     source = work / "source"
     source.mkdir()
-    # Explicit build inputs: never include personal projects, caches, or the archive.
+    # Explicit build inputs: never include personal projects, loose artwork, or the archive.
     for name in ["Cargo.toml", "Cargo.lock", "build.rs", "LICENSE.md", "THIRD_PARTY_NOTICES.md"]:
         shutil.copy2(ROOT / name, source)
-    for name in ["src", "resources", "assets", "licenses", "packaging"]:
-        if name == "assets":
-            # Includes embedded artwork, excludes user project/preset documents.
-            shutil.copytree(ROOT / name, source / name,
-                            ignore=shutil.ignore_patterns("*.chromiator", "*.json"))
-        else:
-            shutil.copytree(ROOT / name, source / name)
+    for name in ["src", "resources", "licenses", "packaging"]:
+        shutil.copytree(ROOT / name, source / name)
+    copy_spectrum_example(source)
     vendor = source / "vendor"
     config = subprocess.check_output(
         ["cargo", "vendor", "--locked", str(vendor)], cwd=source, text=True)
