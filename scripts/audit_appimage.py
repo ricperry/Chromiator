@@ -21,6 +21,20 @@ FORBIDDEN_BUNDLES = {
     "libEGL.so.1", "libvulkan.so.1", "libgbm.so.1", "libdrm.so.2",
 }
 FORBIDDEN_NAME_RE = re.compile(r"^(?:lib(?:nvidia|amdgpu|GLX_mesa|EGL_mesa|vulkan_(?:radeon|intel))|.*_dri\.so)")
+REQUIRED_ADWAITA_ICONS = (
+    "symbolic/actions/document-open-symbolic.svg",
+    "symbolic/actions/document-save-as-symbolic.svg",
+    "symbolic/actions/document-save-symbolic.svg",
+    "symbolic/actions/edit-redo-symbolic.svg",
+    "symbolic/actions/edit-undo-symbolic.svg",
+    "symbolic/actions/open-menu-symbolic.svg",
+    "symbolic/actions/sidebar-show-symbolic.svg",
+    "symbolic/actions/view-refresh-symbolic.svg",
+    "symbolic/places/user-trash-symbolic.svg",
+    "symbolic/status/changes-allow-symbolic.svg",
+    "symbolic/status/changes-prevent-symbolic.svg",
+    "symbolic/status/folder-open-symbolic.svg",
+)
 
 
 def readelf(path: Path, *options: str) -> str:
@@ -175,8 +189,18 @@ def audit(root: Path, baseline: tuple[int, int], host_root: Path,
         content = hook.read_text(errors="replace")
         if "GDK_BACKEND=\"${GDK_BACKEND:-wayland,x11}\"" not in content:
             errors.append("GTK hook does not preserve Wayland/X11 fallback")
+        if 'GDK_PIXBUF_MODULE_FILE="$APPDIR//usr/lib/gdk-pixbuf-2.0/2.10.0/loaders.cache"' not in content:
+            errors.append("GTK hook does not select the relocated GdkPixbuf loader cache")
+        if 'GDK_PIXBUF_MODULEDIR="$APPDIR/usr/lib/gdk-pixbuf-2.0/2.10.0/loaders"' not in content:
+            errors.append("GTK hook does not select the bundled GdkPixbuf loader directory")
+        if 'LD_LIBRARY_PATH="$APPDIR/usr/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"' not in content:
+            errors.append("GTK hook does not add bundled libraries to the runtime search path")
         if re.search(r"/home/|/out/|/src/|/usr/lib64/|/usr/lib/x86_64-linux-gnu/|/tmp/\.mount", content):
             errors.append("GTK hook contains a build-host path")
+    adwaita = root / "usr/share/icons/Adwaita"
+    for icon in REQUIRED_ADWAITA_ICONS:
+        if not (adwaita / icon).is_file():
+            errors.append(f"missing bundled Adwaita icon: {icon}")
     if not cache.is_file():
         errors.append("missing GdkPixbuf loaders.cache")
     else:

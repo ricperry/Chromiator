@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 from pathlib import Path
 import sys
 import unittest
@@ -64,6 +65,9 @@ class FakeApplication:
         self.name = name
         self.registry_id = registry_id
         self.state = FakeState(states)
+        self.app = self
+        self.bus_name = f":1.{id(self)}"
+        self.path = "/org/a11y/atspi/accessible/root"
 
     @property
     def id(self):
@@ -87,6 +91,17 @@ class FakeDesktop:
 
     def getChildAtIndex(self, index: int):
         """Return one fake application root by its desktop index."""
+        return self.children[index]
+
+
+class FakeTreeNode:
+    """Expose stable children for testing a bounded AT-SPI walk."""
+
+    def __init__(self, children=()) -> None:
+        self.children = list(children)
+        self.childCount = len(self.children)
+
+    def getChildAtIndex(self, index: int):
         return self.children[index]
 
 
@@ -121,6 +136,35 @@ class AtspiToolTests(unittest.TestCase):
         states = atspi_tool.safe_states(FakeNode([atspi_tool.pyatspi.STATE_PRESSED]))
         self.assertTrue(states["pressed"])
         self.assertFalse(states["checked"])
+
+    def test_walk_skips_defunct_children_and_records_live_children_once(self) -> None:
+        """Avoid duplicate remote reads around a child that can disappear mid-traversal."""
+        live = FakeTreeNode()
+        defunct = FakeTreeNode()
+        root = FakeTreeNode([live, defunct])
+
+        def snapshot(node, path):
+            result = record("Root" if node is root else "Live", "panel")
+            result.path = path
+            return result
+
+        with patch.object(atspi_tool, "is_defunct", side_effect=lambda node: node is defunct), patch.object(
+            atspi_tool, "record_node", side_effect=snapshot
+        ) as reads:
+            entries = list(atspi_tool.walk(root, "application[0]"))
+        self.assertEqual([node for node, _record, _depth in entries], [root, live])
+        self.assertEqual(reads.call_count, 2)
+        self.assertEqual(entries[1][1].path, "application[0]/panel:Live[0]")
+
+    def test_action_readback_does_not_query_a_removed_target(self) -> None:
+        """A closing dialog can remove the action target before the next GTK turn."""
+        before = record("Cancel", "button")
+        with patch.object(atspi_tool.time, "sleep"), patch.object(
+            atspi_tool, "is_defunct", return_value=True
+        ), patch.object(atspi_tool, "record_node") as read, patch("builtins.print") as output:
+            self.assertEqual(atspi_tool.emit_change(object(), before), 0)
+        read.assert_not_called()
+        self.assertIsNone(json.loads(output.call_args.args[0])["after"])
 
     def test_selector_readback_requires_the_dropdown_to_change(self) -> None:
         """Rejects an unchanged dropdown even when a popup list row claims selection."""
@@ -292,6 +336,18 @@ class AtspiToolTests(unittest.TestCase):
             atspi_tool.semantic_record_key(second, proxy),
         )
 
+    def test_focus_identity_matches_native_and_protocol_proxies_by_bus_ref(self) -> None:
+        """A native focus event and snapshot node for one widget have distinct Python types."""
+        native = type("Native", (), {})()
+        native.app = type("Application", (), {"bus_name": ":1.42"})()
+        native.path = "/org/a11y/atspi/accessible/314"
+        protocol = type("Protocol", (), {})()
+        protocol.app = native.app
+        protocol.path = native.path
+        self.assertTrue(atspi_tool.same_accessible(native, protocol))
+        protocol.path = "/org/a11y/atspi/accessible/315"
+        self.assertFalse(atspi_tool.same_accessible(native, protocol))
+
     def test_wait_state_decisions_use_native_enabled_and_checked_readback(self) -> None:
         """Accepts native disabled state and rejects an unrelated checked-state requirement."""
         disabled = record("Apply Pattern", "button", enabled=False)
@@ -312,8 +368,11 @@ class AtspiToolTests(unittest.TestCase):
         first = FakeApplication("chromiator", 41)
         second = FakeApplication("chromiator", 42)
         desktop = FakeDesktop([first, second])
-        with patch.object(atspi_tool.pyatspi.Registry, "getDesktop", return_value=desktop):
-            self.assertEqual(atspi_tool.application_roots("Chromiator"), [first, second])
+        with patch.object(atspi_tool.pyatspi.Registry, "getDesktop", return_value=desktop), patch.object(
+            atspi_tool, "private_bus", return_value=object()
+        ), patch.object(atspi_tool, "SnapshotAccessible") as proxy:
+            self.assertEqual(len(atspi_tool.application_roots("Chromiator")), 2)
+            self.assertEqual(proxy.call_count, 2)
 
     def test_application_roots_collapse_only_same_registry_id(self) -> None:
         """Collapses duplicate proxies only when they expose the same AT-SPI registry ID."""
@@ -321,8 +380,11 @@ class AtspiToolTests(unittest.TestCase):
         duplicate = FakeApplication("chromiator", 41)
         unreadable = FakeApplication("chromiator", RuntimeError("no registry ID"))
         desktop = FakeDesktop([first, duplicate, unreadable])
-        with patch.object(atspi_tool.pyatspi.Registry, "getDesktop", return_value=desktop):
-            self.assertEqual(atspi_tool.application_roots("Chromiator"), [first, unreadable])
+        with patch.object(atspi_tool.pyatspi.Registry, "getDesktop", return_value=desktop), patch.object(
+            atspi_tool, "private_bus", return_value=object()
+        ), patch.object(atspi_tool, "SnapshotAccessible") as proxy:
+            self.assertEqual(len(atspi_tool.application_roots("Chromiator")), 2)
+            self.assertEqual(proxy.call_count, 2)
 
 
 if __name__ == "__main__":

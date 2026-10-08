@@ -12,6 +12,7 @@ pub type PreparedDocument = (
     Option<PathBuf>,
     DocumentKind,
     PixelImage,
+    PixelImage,
     DisplayBuffer,
     DisplayBuffer,
     Coverage,

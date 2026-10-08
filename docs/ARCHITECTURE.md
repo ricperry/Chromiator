@@ -61,6 +61,13 @@ ICC handling, metric definitions, transfer functions, and deterministic tie
 rules. Smoothing precedes mapping; ordered hue operations follow mapping and
 must not be merged if that changes clipping or rounding.
 
+Input smoothing σ is measured in original source-image pixels. Initial document
+preparation and the latest-only preview scheduler process the authoritative full
+source through the same pipeline as export, then publish a nearest-neighbor
+bounded result. Keep the bounded source buffer for Source display; sample Source
+from the document and Result from the bounded processed float result. The
+large-σ three-box path keeps blur work linear in image size rather than radius.
+
 `CompiledVoronoi` compiles the recipe into stable site order and cached site
 context. Influence weighting is a per-site invariant. Winner selection returns
 a stable site index; coverage uses that index directly. Hard target resolution

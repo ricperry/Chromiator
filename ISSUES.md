@@ -65,7 +65,7 @@ Unresolved issues are grouped by their primary ownership area and ordered by sev
 ### P1 — High impact
 
 - [x] **THR-045** — `done` · P1 · Display color delivery — Finalized the application boundary: Chromiator supplies a bounded encoded-sRGB GTK preview and delegates monitor-profile selection and final display transformation to the OS, window manager, and compositor. The app will not query EDID/colord, implement display profiling, or claim HDR/wide-gamut presentation. Palette-reduced results that need display-specific grading belong in a purpose-built downstream application. Closed by explicit product decision on 2026-07-16; README and the final PNG/EXR contract state the boundary.
-- [ ] **THR-017** — `in-progress` · P1 · Color pipeline — Design, process, and expose alpha quantization and input smoothing while preserving straight-alpha precision and cancellation. Scoped progress 2026-07-15: global Smooth source 0–10 runs a cancellable separable Gaussian before both engines, filtering premultiplied RGB+alpha then restoring straight alpha; the finalized project v5 and preset v2 formats store the shared setting directly. Full export uses source-pixel amount; bounded preview uses preview-pixel amount as a documented interaction-cost tradeoff. Alpha quantization remains open.
+- [ ] **THR-017** — `in-progress` · P1 · Color pipeline — Design, process, and expose alpha quantization and input smoothing while preserving straight-alpha precision and cancellation. Update 2026-10-07: Smooth source uses Gaussian σ in original source-image pixels from 0 to 10,000; initial and scheduled previews process the full source through the same pipeline as export, then reduce the processed result to the 1600-pixel preview bound. The legacy exact FIR and output are preserved for σ 0.5–10; smaller σ uses a stable exact kernel, and a cancellable three-box approximation is blended in from σ 10–12 for bounded large-radius work. The existing setting remains in project v6 and preset v3 without a schema change. Numeric parity tests cover PNG8 export downsampling at σ 0, 0.1, 10, 11, 25, and 10,000. Private-Sway review `ui-run-20261007-192021-355905` opened a σ=25 project, set/read back 10,000, then verified Undo=25 and Redo=10,000 with clean stderr. At 1024×768 the smoothing controls and color sites were readable after moving the divider to 570; the default divider remains clipped under existing THR-065. The user accepted the smoothing and preview/export parity work on 2026-10-07. Real-GNOME validation remains open. The 0.2.0 AppImage is unchanged. Alpha quantization remains open, so this combined issue remains in progress.
 - [x] **THR-018** — `done` · P1 · Import/export — Finalized native file support without a browser compatibility layer: project v5 and preset JSON v2 are the only accepted editable formats; legacy browser JSON/PNG recipes are not imported or embedded. Older pre-release versions are rejected with actionable diagnostics and never migrated or rewritten. Completed 2026-07-16 with exact-version, missing-field, unknown-field, strict-archive, and unchanged-incompatible-preset tests.
 
 ### P2 — Important improvements
@@ -213,6 +213,10 @@ controls clipped beyond the right edge. The attempted sizing fix did not resolve
 this in the 2026-09-19 native check. Manual panel hiding yielded a usable 720x600
 canvas in the earlier check. See `docs/BUG_HUNT_FOLLOWUP_2026-09-19.md` and
 `responsive-1024.png` / `responsive-720-hidden.png` in the earlier bug-hunt evidence.
+Follow-up 2026-10-07: the default divider at 1024×768 leaves the inspector
+clipped at the right edge on the current build. Moving the divider to 570 makes
+the controls and color sites readable; the default-position clipping remains
+this same deferred layout issue, not a smoothing-control regression.
 > THR-061 status update (2026-09-19): implemented and verification complete;
 > artistic user acceptance pending. Priority P1. This supersedes the earlier
 > implementation-in-progress and solver/serialization blocker notes below.
@@ -371,6 +375,41 @@ canvas in the earlier check. See `docs/BUG_HUNT_FOLLOWUP_2026-09-19.md` and
   the newly recorded chooser mismatch THR-075. No implementation is authorized
   by this evidence-recording update.
 
+  Current candidate update (2026-10-07; supersedes the build-7/cloud candidate
+  results above): pinned build candidate
+  `target/distribution/0.2.0-q93_3i2j/appimage/output/Chromiator-0.2.0-x86_64.AppImage`,
+  29,583,864 bytes, SHA-256
+  `6919478aa842246f16f871ae254da54d78f35274e6f6c97daeb088ef136b45a5`, based on
+  HEAD `aff7001ed23e3d3ac63cdec39cd5e57fba17e3c0` plus retained dirty Ctrl+O and
+  packaging edits. Both final AppDir/payload audits pass for 119 ELF objects,
+  zero errors, maximum GLIBC 2.39 against the 2.41 ceiling. Clean Debian 13.7 /
+  glibc 2.41 stock AppRun testing used a runtime-only image (no compiler,
+  `pkg-config`, GTK development package, launch network, or GPU device). Direct
+  runtime packages: `fontconfig`, `fonts-dejavu-core`, `libegl1`, `libgbm1`,
+  `libgl1-mesa-dri`, `libgles2`, `libvulkan1`, `mesa-vulkan-drivers`,
+  `shared-mime-info`, and `xkb-data`; see the retained full package manifest.
+  Adwaita icons are bundled. An A/B run established that host
+  `shared-mime-info` supplies required MIME data for SVG icons. The hook loaded
+  the relocated SVG loader/librsvg; with `GSK_RENDERER` unset, process maps
+  showed EGL/GLES/Mesa userspace, without GPU passthrough (no hardware
+  acceleration claim).
+
+  The clean runtime rendered welcome and Spectrum, imported the raw PNG fixture,
+  opened and saved/reopened the v6 project with matching source bytes and full
+  manifest, and exported 256 × 128 RGBA pixels exactly matching the hard golden.
+  Ordinary FUSE launch on the Fedora host mounted and rendered welcome and
+  Spectrum. The helper's AT-SPI name query first timed out because it queried
+  `Chromiator` while the package root was `AppRun.wrapped`. Explicitly selecting
+  `AppRun.wrapped` still exposed only a top-level frame; the cause is unconfirmed
+  and is recorded under THR-077. Spectrum selection used the screenshot. The
+  package GUI launch succeeded, but its AT-SPI readback remains unverified.
+  Logs, screenshots, manifests, artifact hashes, and provenance are under
+  `target/distribution/0.2.0-q93_3i2j/appimage/`. All GUI evidence is private
+  Sway. Fedora GNOME/Mutter, real desktop portals, and human GUI/accessibility
+  acceptance remain open; THR-071 stays `in-progress`. The general smoke script
+  was not used. Cross-reference THR-073 and THR-077; no separate issue ID was
+  added for the unconfirmed packaged-tree observation.
+
 - [ ] **THR-072** — `open` · P1 · Editing workflow proposal — After THR-070 and
   THR-071 review, observe small-palette remapping, Target edits, independent
   Source/Target editing, Influence, geometry, and hard/blended artwork results.
@@ -404,17 +443,27 @@ canvas in the earlier check. See `docs/BUG_HUNT_FOLLOWUP_2026-09-19.md` and
   palette/alpha tests; never reinterpret existing projects. Depends on THR-070
   characterization and THR-072 conflict feedback.
 
-- [ ] **THR-075** — `open` · P2 · File-opening UX — Ctrl+O's tooltip advertises
+- [ ] **THR-075** — `in-progress` · P2 · File-opening UX — Ctrl+O's tooltip advertises
   opening an image or project, but the invoked image-only chooser rejects
   `.chromiator` files. Reproduced in the bounded Debian 13.6/XFCE/X11 Cairo
   cloud test of the Stage 1 candidate; the dedicated Open Project action
   successfully opened the same project. Evidence: ChatGPT Library
-  `libfile_edc44f21a56c81918da4a0391cefe8ec`. Align the advertised Ctrl+O
-  behavior and its actual chooser/routing in a separately scoped fix. Acceptance
-  should exercise Ctrl+O for a supported image and a current project according
-  to the settled action contract, confirm accurate tooltip/filter/error text,
-  and retain the working dedicated Open Project route. Cross-reference THR-071
-  and THR-073. No implementation or completion is claimed.
+  `libfile_edc44f21a56c81918da4a0391cefe8ec`. Implementation update
+  (2026-10-07): the header Open/Ctrl+O chooser now accepts the supported raster
+  types and `.chromiator`, then routes by the selected path. The welcome Start
+  New Project action remains image-only and the dedicated Open Project action
+  remains project-only. Pure routing and dirty-replacement guard tests pass;
+  all four display-backed chooser/preset filter tests pass. The debug binary
+  builds and focused strict Clippy passes. Private-Sway keyboard Ctrl+O opened
+  the combined chooser and loaded both `stage0-scene.png` and the v6
+  `desert-dusk-v6.chromiator` fixture; the dedicated Open Project menu retained
+  its project-only chooser. Cancel preserved the active project, and dirty
+  Cancel/Discard plus invalid-project error paths preserved the active
+  document. Screenshots and runtime logs are under
+  `.codex-work/evidence/ui-run-20261007-145946-166754/` and
+  `.codex-work/evidence/ui-run-20261007-150424-172142/`. This is private-Sway
+  evidence; user and real GNOME/portal acceptance remain pending. Cross-reference
+  THR-071, THR-073, and THR-077.
 
 - [x] **THR-076** — `done` · P1 · Preset menu and Color mapping workspace —
   Move Select Preset, Load Preset, and Save Preset from the inspector to the
@@ -436,15 +485,69 @@ canvas in the earlier check. See `docs/BUG_HUNT_FOLLOWUP_2026-09-19.md` and
   confirmed the intended UI behavior on 2026-10-07. This closes the product
   change without claiming the separate automation or packaging gates passed.
 
-- [ ] **THR-077** — `open` · P2 · GTK/AT-SPI audit crashes during dynamic UI
+- [ ] **THR-077** — `in-progress` · P2 · GTK/AT-SPI audit crashes during dynamic UI
   queries — On GTK 4.22.5, GLib 2.88.3, and AT-SPI 2.60.7, the blanket semantic
   query can segfault around a disappearing/rebuilt widget during preset or file
   chooser transitions. The retained gdb trace reaches AT-SPI
   `handle_accessible_method` → `g_variant_new` → SIGSEGV at
   `.codex-work/evidence/ui-run-20261007-121617-32737/app.stdout.log`. A second
   probe with accessibility relations disabled and dispatch-only reads also
-  failed during an asynchronous chooser transition, so the exact trigger is
-  unisolated. Do not change app accessibility relations or descriptions until
-  a minimal reproducer identifies the fault. This blocks blanket AT-SPI
-  acceptance for THR-076; visible workflows and screenshots remain separately
-  recorded. Cross-reference THR-076 and THR-073.
+  failed during an asynchronous chooser transition. A fatal-critical gdb run
+  isolated GTK's application-root `GetChildAtIndex` branch: it obtains a
+  top-level window context with a NULL object path and passes that path to
+  `g_variant_new` during chooser removal
+  (`.codex-work/evidence/ui-run-20261007-145840-165580/app.stdout.log`).
+  The private harness now enumerates application and descendant children from
+  public AT-SPI `GetChildren` snapshots, with local indexing and native
+  Action/Value/Text/Selection/Relation readbacks. A bus trace shows five
+  application-root `GetChildren` and zero application `GetChildAtIndex` calls.
+  Eighty concurrent full-tree polls and 12 chooser open/Cancel cycles passed
+  with fresh editor readback and no GTK critical; preset Cancel/reopen/Apply
+  and Ctrl+O dirty/error transitions also passed in private Sway. Evidence:
+  `.codex-work/evidence/ui-run-20261007-150424-172142/`. No app accessibility
+  relations or descriptions changed. Real GNOME/portal and broader assistive
+  technology acceptance remain pending. Packaging observation (2026-10-07):
+  the ordinary FUSE candidate rendered normally, but the AT-SPI view exposed
+  only a top-level frame even after selecting the packaged `AppRun.wrapped`
+  application root explicitly. The helper's initial `Chromiator` application
+  name query also timed out. Cause is unconfirmed; packaged AT-SPI readback
+  remains unverified and is distinct from the repaired crash-path regression.
+  Screenshots and logs are under
+  `target/distribution/0.2.0-q93_3i2j/appimage/runtime-clean-debian-20261007/host-fuse-evidence/`.
+  Cross-reference THR-071, THR-076, and THR-073.
+
+- [ ] **THR-078** — `in-progress` · P2 · Automatic site initialization — Nearby
+  dominant shades could consume the initial site budget before small, distinct
+  highlights and accent colors were considered. Initialization now uses the
+  full-resolution alpha-weighted source distribution in a bounded equal-volume
+  40³ OKLab grid. The strongest complete-link color family anchors the palette;
+  additional sites come from compact local density modes measured with a
+  normalized 0.05 core and 0.10 shell, and are chosen from real source pixels
+  only when actual swatches remain at least 0.05 apart. Connected plateaus are
+  collapsed, diffuse low-density fields do not fill slots, smooth gradients fall
+  back to coalesced families, and six remains a cap rather than a target. The
+  second full-source pass now chooses the actual pixel nearest the voxel's
+  alpha-weighted OKLab center; this intentionally replaces the former local
+  3×3 exact-color-support tie-break. Tests cover merged dominant shades, compact
+  accents spread across voxels with at most two pixels each, an equal-mass
+  diffuse field with more than two pixels in every bin at two grid phases,
+  white/cyan patches, singleton noise, transparent pixels, flat plateaus,
+  gradient fallback, a distinct-tone chain, and cap/no-padding behavior. Seven
+  focused tests and all 80 core tests pass; the artifact generator is the one
+  ignored test. Strict binary Clippy and the debug build pass. Evidence under
+  `target/validation/auto-palette-diversity/` includes the source fixture,
+  `after-identity.png` with the initial identity Targets, and a separately
+  labeled `diagnostic-recolored.png` with artificial Targets. Native review
+  passed in private Sway using the rebuilt debug binary. The synthetic source
+  moved from one site to three (dominant brown family, white, cyan); Spectrum
+  moved from four sites to six. Native site readback exactly matches
+  `after-identity.png.json`, and each initial Target equals its sampled Source
+  color. The raw 100×100 export preserves source alpha byte-for-byte and has 40
+  white pixels, 40 cyan pixels, 9,919 brown pixels, and one transparent black
+  pixel. Screenshots and sidecars are under
+  `target/validation/auto-palette-diversity/`; correlated run logs are under
+  `.codex-work/evidence/ui-run-20261007-182741-323846/` and
+  `.codex-work/evidence/ui-run-20261007-182807-324545/`, both with empty app
+  stderr. The prior AppImage was not rebuilt for this initializer, so this is
+  not packaged-app evidence. Real GNOME/portal and user acceptance remain
+  pending. Cross-reference THR-046.

@@ -6,6 +6,23 @@ pub enum OpenKind {
     Project,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum OpenIntent {
+    Image,
+    Project,
+    ImageOrProject,
+}
+
+impl OpenIntent {
+    pub fn selected_kind(self, path: &Path) -> OpenKind {
+        match self {
+            Self::Image => OpenKind::Image,
+            Self::Project => OpenKind::Project,
+            Self::ImageOrProject => classify_open_path(path),
+        }
+    }
+}
+
 pub fn classify_open_path(path: &Path) -> OpenKind {
     if path
         .extension()

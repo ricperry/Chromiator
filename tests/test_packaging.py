@@ -27,6 +27,29 @@ build = load_script("build_distributions")
 
 
 class RuntimeInputTests(unittest.TestCase):
+    def test_bundle_adwaita_theme_and_copyright(self):
+        with tempfile.TemporaryDirectory() as location:
+            root = Path(location)
+            theme = root / "source/Adwaita"
+            action = theme / "symbolic/actions"
+            action.mkdir(parents=True)
+            icon = action / "edit-undo-symbolic.svg"
+            icon.write_text("<svg id='undo'/>")
+            (action / "undo-alias.svg").symlink_to(icon.name)
+            copyright_file = root / "copyright"
+            copyright_file.write_text("Adwaita icon theme license")
+            appdir = root / "AppDir"
+
+            build.bundle_adwaita_icons(appdir, theme, copyright_file)
+
+            copied = appdir / "usr/share/icons/Adwaita/symbolic/actions"
+            self.assertEqual((copied / icon.name).read_text(), "<svg id='undo'/>")
+            self.assertTrue((copied / "undo-alias.svg").is_symlink())
+            self.assertEqual(
+                (appdir / "usr/share/licenses/chromiator/adwaita-icon-theme.copyright").read_text(),
+                "Adwaita icon theme license",
+            )
+
     def test_runtime_missing_hash_and_architecture_fail_closed(self):
         with tempfile.TemporaryDirectory() as location:
             runtime = Path(location) / "runtime-x86_64"
@@ -97,6 +120,7 @@ class RuntimeInputTests(unittest.TestCase):
                   mock.patch.object(build, "check_pinned_runtime", return_value=work / "runtime"),
                   mock.patch.object(build.shutil, "copy2"),
                   mock.patch.object(build, "install_metadata"),
+                  mock.patch.object(build, "bundle_adwaita_icons"),
                   mock.patch.object(build, "sanitize_loader_cache"),
                   mock.patch.object(build, "drop_generated_graphics_loaders"),
                   mock.patch.object(build, "complete_appdir_libraries"),
@@ -114,6 +138,11 @@ class RuntimeInputTests(unittest.TestCase):
             ))
             self.assertEqual(kwargs["env"]["LDAI_RUNTIME_FILE"], str(work / "runtime"))
             self.assertEqual(kwargs["env"]["OUTPUT"], str(work / "Chromiator-0.2.0-x86_64.AppImage"))
+            hook_contents = hook.read_text()
+            self.assertIn('export GDK_PIXBUF_MODULEDIR="$APPDIR/usr/lib/gdk-pixbuf-2.0/2.10.0/loaders"',
+                          hook_contents)
+            self.assertIn('export LD_LIBRARY_PATH="$APPDIR/usr/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"',
+                          hook_contents)
 
 
 class ElfParserTests(unittest.TestCase):
@@ -137,11 +166,19 @@ class StaticClosureTests(unittest.TestCase):
         (self.root / "usr/lib").mkdir()
         (self.root / "apprun-hooks").mkdir()
         (self.root / "usr/lib/gdk-pixbuf-2.0/2.10.0").mkdir(parents=True)
+        adwaita = self.root / "usr/share/icons/Adwaita"
+        for icon in audit.REQUIRED_ADWAITA_ICONS:
+            path = adwaita / icon
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("<svg/>")
         (self.root / "usr/bin/chromiator").write_bytes(b"\x7fELFfake")
         for name in ("libfontconfig.so.1", "libharfbuzz.so.0"):
             (self.root / "usr/lib" / name).write_bytes(b"\x7fELF" + name.encode())
         (self.root / "apprun-hooks/linuxdeploy-plugin-gtk.sh").write_text(
-            'export GDK_BACKEND="${GDK_BACKEND:-wayland,x11}"\n')
+            'export GDK_BACKEND="${GDK_BACKEND:-wayland,x11}"\n'
+            'export GDK_PIXBUF_MODULE_FILE="$APPDIR//usr/lib/gdk-pixbuf-2.0/2.10.0/loaders.cache"\n'
+            'export GDK_PIXBUF_MODULEDIR="$APPDIR/usr/lib/gdk-pixbuf-2.0/2.10.0/loaders"\n'
+            'export LD_LIBRARY_PATH="$APPDIR/usr/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"\n')
         (self.root / "usr/lib/gdk-pixbuf-2.0/2.10.0/loaders.cache").write_text("loader.so\n")
 
     def tearDown(self):
@@ -167,6 +204,20 @@ class StaticClosureTests(unittest.TestCase):
 
     def test_valid_bundled_provider_closure(self):
         self.assertTrue(self.report()["passed"])
+
+    def test_adwaita_icon_set_is_required(self):
+        icon = self.root / "usr/share/icons/Adwaita/symbolic/actions/edit-undo-symbolic.svg"
+        icon.unlink()
+        self.assertIn("missing bundled Adwaita icon: symbolic/actions/edit-undo-symbolic.svg",
+                      "\n".join(self.report()["errors"]))
+
+    def test_gdk_pixbuf_runtime_paths_are_required(self):
+        hook = self.root / "apprun-hooks/linuxdeploy-plugin-gtk.sh"
+        hook.write_text('export GDK_BACKEND="${GDK_BACKEND:-wayland,x11}"\n')
+        errors = "\n".join(self.report()["errors"])
+        self.assertIn("does not select the relocated GdkPixbuf loader cache", errors)
+        self.assertIn("does not select the bundled GdkPixbuf loader directory", errors)
+        self.assertIn("does not add bundled libraries to the runtime search path", errors)
 
     def test_bad_glibc_requirement_fails(self):
         base = self.fake_readelf

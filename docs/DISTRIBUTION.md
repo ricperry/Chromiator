@@ -81,11 +81,14 @@ network access disabled. Only the embedded Spectrum example is copied from
 
 The GTK plugin bundles GTK dependencies, resources, and runtime hooks. The
 script replaces its forced X11 setting with Wayland/X11 fallback while retaining
-an explicit GDK_BACKEND override. Fontconfig and HarfBuzz, including their
-non-system dependencies, are explicitly requested from the Debian builder and
-must appear as loadable bundled providers. System font configuration and fonts
-remain host resources. GLIBC and GPU drivers remain host dependencies. The
-audited host SONAME set is `ld-linux-x86-64.so.2`, `libc.so.6`,
+an explicit GDK_BACKEND override. Its runtime hook points GdkPixbuf at the
+relocated bundled loader cache, module directory, and library directory.
+Fontconfig and HarfBuzz, including their non-system dependencies, are explicitly
+requested from the Debian builder and must appear as loadable bundled providers.
+The Adwaita icons used by the UI and their copyright notice are bundled.
+System MIME data (`shared-mime-info`), font configuration and fonts, EGL/GLES
+userspace, GLIBC, and GPU drivers remain host resources. The audited host SONAME
+set is `ld-linux-x86-64.so.2`, `libc.so.6`,
 `libgcc_s.so.1`, `libm.so.6`, `libresolv.so.2`, and `libvulkan.so.1`.
 The builder does not bundle GLIBC or GPU drivers.
 
@@ -99,7 +102,8 @@ runtime. The 2026-10-04 build-7 candidate passed both final audits with 119 ELF
 files, zero errors, and maximum GLIBC 2.39. Reports are
 `target/distribution/0.2.0-vsd173k4/appimage/output/abi-audit.json` and
 `target/distribution/0.2.0-vsd173k4/appimage/output/packaged-abi-audit.json`.
-A passing static audit is not clean-system acceptance.
+That candidate is superseded by the 2026-10-07 internal candidate below. A
+passing static audit alone is not clean-system acceptance.
 
 The published v0.2.0 Fedora-built AppImage fails this proposed ceiling: seven
 bundled libraries require GLIBC 2.43, and Fontconfig/HarfBuzz providers are
@@ -113,18 +117,71 @@ the audited closure. Build 7 completed with the same strict audits and runtime
 pin. Candidate: `target/distribution/0.2.0-vsd173k4/appimage/output/Chromiator-0.2.0-x86_64.AppImage`,
 28,228,088 bytes, SHA-256 `a123e544a6069701235a338c2a0174a972db1fe7e5a0a2f782318732c3bdf621`.
 It is based on checkpoint `425760c` plus the local packaging fix and the
-pre-existing local icon edit copied by the build snapshot. See
-`docs/FUNCTIONAL_AUDIT.md` for provenance and failed-attempt history. The
-candidate is for internal testing; clean-Debian and Fedora GUI workflows have
-not run. Do not advertise Debian 13 compatibility until those checks pass.
+pre-existing local icon edit copied by the build snapshot. The build-7 candidate
+is superseded; its provenance and failed-attempt history remain historical
+records in `docs/FUNCTIONAL_AUDIT.md`.
+
+### Latest internal candidate (2026-10-07)
+
+The pinned build produced
+`target/distribution/0.2.0-q93_3i2j/appimage/output/Chromiator-0.2.0-x86_64.AppImage`,
+29,583,864 bytes, SHA-256
+`6919478aa842246f16f871ae254da54d78f35274e6f6c97daeb088ef136b45a5`. It is
+based on HEAD `aff7001ed23e3d3ac63cdec39cd5e57fba17e3c0` plus the retained dirty
+Ctrl+O and packaging edits. The captured Cargo manifests, application source,
+build script, and original packaging icon match the build snapshot byte-for-byte;
+the original icon SHA-256 is
+`423e47d2f1a488b2d5439da12b0e2b07cbff18612edbc33c3013c1d71b4770ee`. The audit
+script's two Adwaita symbolic/status paths were corrected after source snapshot
+capture; the corrected audit was run on the completed AppDir and final packaged
+payload. Both final audits report 119 ELF objects, zero errors, and maximum
+GLIBC 2.39 against the 2.41 ceiling. Evidence, source hashes, and logs are under
+`target/distribution/0.2.0-q93_3i2j/appimage/`; no audit was bypassed.
+
+The clean runtime reproduction used Debian 13.7/glibc 2.41 from the pinned
+Debian 13 base digest, with no compiler, `pkg-config`, GTK development package,
+network access during app launch, or passed-through GPU device. The direct
+runtime packages were `fontconfig`, `fonts-dejavu-core`, `libegl1`, `libgbm1`,
+`libgl1-mesa-dri`, `libgles2`, `libvulkan1`, `mesa-vulkan-drivers`,
+`shared-mime-info`, and `xkb-data`; the retained manifest records all 128
+installed packages including dependencies. The AppDir was mounted read-only.
+`shared-mime-info` is required by the tested desktop path: without its MIME
+database SVG icons were absent; installing it restored app, titlebar, and
+toolbar icons. The Adwaita icon files themselves are bundled. The AppRun hook
+resolves the bundled SVG loader and librsvg from the relocated bundle. The host
+supplies `libEGL.so.1` through `libegl1` and `libGLESv2.so.2` through `libgles2`.
+
+The stock AppRun completed the welcome and Spectrum example, opened the v6
+project fixture, saved and reopened it with the same embedded source bytes and
+full manifest, imported a PNG, and exported a 256 × 128 RGBA image with exact
+pixel equality to the hard golden. The container had no `/dev/dri` device and
+`GSK_RENDERER` was unset; process maps show EGL, GLES, and Mesa/Gallium userspace
+libraries loaded. This verifies the default renderer path with these userspace
+providers, not hardware acceleration. An ordinary FUSE launch also mounted and
+rendered the welcome and Spectrum screens on the Fedora host. The helper's
+AT-SPI name lookup first timed out because the packaged root is
+`AppRun.wrapped` while the helper requested `Chromiator`. Explicitly selecting
+`AppRun.wrapped` still exposed only a top-level frame; the cause is unconfirmed
+and is tracked under THR-077. Spectrum was selected from the screenshot. The
+FUSE GUI launch succeeded, but package AT-SPI readback remains unverified.
+
+Screenshots, logs, package/provider manifests, saved project, output, and hashes
+are retained in
+`target/distribution/0.2.0-q93_3i2j/appimage/runtime-clean-debian-20261007/`.
+These were private-Sway checks. Fedora GNOME/Mutter, desktop-portal behavior,
+and human workflow/accessibility acceptance remain open; THR-071 stays
+`in-progress`. The earlier build-7 and 2026-10-04 cloud notes below are historical
+evidence for the superseded candidate and do not describe this candidate's FUSE
+or clean-runtime results. The generic `scripts/smoke_appimage.sh` was not used
+for this run.
 
 When package launches are authorized on a clean target system, run
 `scripts/smoke_appimage.sh /absolute/package.AppImage /new/output/directory
 /absolute/fixture.png`. It records package/fixture hashes and separate normal
 FUSE and extracted-AppRun launch attempts. Exit status alone does not establish
 GUI, import, save, export, or accessibility success; inspect the window, logs,
-screenshots, and output files separately. This runner has not been executed in
-the current Stage 1 work.
+screenshots, and output files separately. It was not used for the 2026-10-07
+candidate checks; manual private-Sway and clean-container procedures were used.
 
 ## Flatpak prerequisites
 

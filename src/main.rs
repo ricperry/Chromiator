@@ -29,14 +29,14 @@ use chromiator::picker::{
 };
 use chromiator::preset::{Preset, PresetDiagnostic, PresetEntry, PresetStore};
 use chromiator::processing::{
-    Coverage, DisplayBuffer, bounded_preview, process_cancellable_with_progress_and_coverage,
-    to_display_rgba8,
+    Coverage, DisplayBuffer, bounded_preview,
+    process_preview_cancellable_with_progress_and_coverage, to_display_rgba8,
 };
 use chromiator::scheduler::{JobCoordinator, JobToken, PreviewScheduler, ProgressTracker};
 use chromiator::session::{DocumentSession, EditCommand, EditGesture, SessionChange};
 use chromiator::starter_looks::{STARTER_LOOKS, recipe_for_starter_look};
 use chromiator::workflow::{
-    OpenKind, SaveResolution, classify_open_path, ensure_project_extension,
+    OpenIntent, OpenKind, SaveResolution, classify_open_path, ensure_project_extension,
     resolve_pending_after_save,
 };
 use chromiator::{example, project, raster};
@@ -146,6 +146,7 @@ fn visible_voronoi_matching_at(index: u32) -> VoronoiMatching {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Replacement {
     OpenImage,
+    OpenImageOrProject,
     OpenProject,
     Example,
 }
@@ -417,17 +418,21 @@ fn build(app: &gtk::Application, cli: Cli) {
     let result_mode = shell.result_mode();
     let split_mode = shell.split_mode();
     let source_mode = shell.source_mode();
-    let smoothing = gtk::SpinButton::with_range(0.0, 10.0, 0.1);
+    let smoothing = gtk::SpinButton::with_range(
+        0.0,
+        f64::from(chromiator::document::MAX_INPUT_SMOOTHING_SIGMA),
+        0.1,
+    );
     smoothing.set_numeric(true);
     smoothing.set_digits(2);
-    smoothing.set_width_chars(4);
+    smoothing.set_width_chars(8);
     smoothing.set_tooltip_text(Some(
-        "Gaussian preprocessing before Voronoi mapping; 0 disables smoothing",
+        "Gaussian sigma in original source-image pixels; 0 disables smoothing. Above 10 uses a fast Gaussian approximation.",
     ));
     smoothing.update_property(&[
-        gtk::accessible::Property::Label("Smooth source amount from 0 to 10"),
+        gtk::accessible::Property::Label("Smooth source sigma in source pixels"),
         gtk::accessible::Property::Description(
-            "Gaussian preprocessing before Voronoi mapping; zero disables smoothing",
+            "Gaussian sigma in original source-image pixels; zero disables smoothing. Above 10 uses a fast Gaussian approximation.",
         ),
     ]);
     let InspectorControls {
@@ -592,7 +597,7 @@ fn build(app: &gtk::Application, cli: Cli) {
     preset_controls(&ui, state.clone());
     group_selection(&ui, state.clone());
     canvas_sampling(&ui, state.clone());
-    replacement_handler(&open, Replacement::OpenImage, &ui, state.clone());
+    replacement_handler(&open, Replacement::OpenImageOrProject, &ui, state.clone());
     replacement_handler(&empty_button, Replacement::OpenImage, &ui, state.clone());
     replacement_handler(&empty_project, Replacement::OpenProject, &ui, state.clone());
     replacement_handler(&empty_example, Replacement::Example, &ui, state.clone());
@@ -719,14 +724,14 @@ fn prepare_document(
     let _ = sender.send(Work::Progress(
         token.generation(),
         0.50,
-        "Building bounded preview…",
+        "Building bounded source view…",
     ));
     let preview_source = bounded_preview(&document.source);
     if !token.is_current() {
         anyhow::bail!("open cancelled")
     }
-    let (result, coverage) = process_cancellable_with_progress_and_coverage(
-        &preview_source,
+    let (result, coverage) = process_preview_cancellable_with_progress_and_coverage(
+        &document.source,
         &document.recipe,
         token.generation(),
         token.current(),
@@ -734,7 +739,7 @@ fn prepare_document(
             let _ = sender.send(Work::Progress(
                 token.generation(),
                 0.55 + fraction * 0.30,
-                "Processing preview rows…",
+                "Processing source image…",
             ));
         },
     )
@@ -754,6 +759,7 @@ fn prepare_document(
         path,
         document_kind,
         preview_source,
+        result,
         source_display,
         result_display,
         coverage,
@@ -1075,8 +1081,8 @@ fn inspector(smoothing: &gtk::SpinButton) -> InspectorControls {
         &matching,
     ));
     mapping_group.append(&inspector_control_row(
-        "_Smoothing",
-        "Gaussian preprocessing before Voronoi mapping; zero disables smoothing.",
+        "_Smoothing σ (source px)",
+        "Gaussian blur sigma measured in original source-image pixels; zero disables smoothing. Above 10 uses a fast Gaussian approximation.",
         smoothing,
     ));
     root.append(&compact_section("Color mapping", &mapping_group, false));
@@ -1256,7 +1262,10 @@ fn apply_session_change(
     {
         let current = state.borrow_mut();
         if change.preview_required
-            && let Some(source) = current.preview_source.clone()
+            && let Some(source) = current
+                .session
+                .document()
+                .map(|document| document.source.clone())
         {
             current.scheduler.schedule(source, change.recipe.clone());
         }

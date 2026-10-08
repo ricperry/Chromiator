@@ -58,6 +58,12 @@ chromiator --open /path/to/project.chromiator
 4. Adjust Matching, Influence, and Transition width to control the result.
 5. Compare Source and Result, save a project to keep editing, or export an image.
 
+A new image starts with up to six sites chosen from its visible colors. Nearby
+dominant shades share a site, while compact, distinct highlights and accents can
+keep their own. Each site attaches to a real source pixel, and its Target starts
+at that sampled color. Transparent pixels and isolated single-pixel noise do not
+add sites on normal-sized images.
+
 ## Canvas and color sites
 
 **Source** displays the original image. **Result** displays the processed image.
@@ -93,7 +99,7 @@ leaves the original value alone.
 | Setting | What it does |
 | --- | --- |
 | Matching | Chooses the color-distance model for assigning pixels to sites. Perceptual (OKLab) is a useful starting point; RGB and HSV produce different partitions. |
-| Smoothing | Smooths the input before color mapping. Zero preserves fine detail; higher values favor broader structures. |
+| Smoothing σ (source px) | Smooths the input before color mapping. Zero preserves fine detail; higher values favor broader structures. Values run from 0 to 10,000 source pixels; above 10, a fast Gaussian approximation is blended in. |
 | Transition width | At 0%, each pixel takes its winning site's Target color. Increasing the width blends competitive sites across color-space boundaries. This is not an image blur. |
 | Blend space | Mixes Target colors in Oklab or Linear RGB, independently of Matching. Available when Transition width is greater than zero. |
 
@@ -103,9 +109,10 @@ its explanation.
 
 Blending can produce more output colors than the number of Target swatches.
 Hard transitions are useful for strict palette reduction; wider transitions are
-useful for smooth recoloring. Smoothing is measured in preview pixels for the
-preview and source pixels for export, so fine smoothed details can differ at
-different resolutions.
+useful for smooth recoloring. Smoothing σ is measured in original source-image
+pixels. Both the initial and scheduled previews process the full source before
+the result is reduced to fit the 1600-pixel preview limit. A PNG8 export reduced
+with the same sampling therefore matches the preview's displayed pixels.
 
 ## Presets
 

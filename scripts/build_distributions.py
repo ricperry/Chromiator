@@ -79,6 +79,22 @@ def install_metadata(prefix):
     shutil.copytree(ROOT / "licenses", notices / "licenses")
 
 
+def bundle_adwaita_icons(appdir, source=Path("/usr/share/icons/Adwaita"),
+                         copyright_file=Path("/usr/share/doc/adwaita-icon-theme/copyright")):
+    """Bundle GTK's named symbolic icons and their package copyright notice."""
+    source = Path(source)
+    if not source.is_dir():
+        raise SystemExit(f"Builder lacks Adwaita icon theme {source}")
+    destination = Path(appdir) / "usr/share/icons/Adwaita"
+    shutil.copytree(source, destination, symlinks=True, dirs_exist_ok=True)
+    copyright_file = Path(copyright_file)
+    if not copyright_file.is_file():
+        raise SystemExit(f"Builder lacks Adwaita icon theme copyright file {copyright_file}")
+    notices = Path(appdir) / "usr/share/licenses/chromiator"
+    notices.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(copyright_file, notices / "adwaita-icon-theme.copyright")
+
+
 def appimage_snapshot(source):
     """Stage only compilation inputs, never the checkout's personal assets or build output."""
     source.mkdir()
@@ -219,11 +235,16 @@ def appimage_inside_builder(work, version, arch, args, lock):
         "--desktop-file", ROOT / "packaging" / f"{APP_ID}.desktop",
         "--icon-file", ROOT / "packaging" / f"{APP_ID}.svg", "--plugin", "gtk",
         cwd=work, env=env)
+    bundle_adwaita_icons(appdir)
     # Upstream's GTK hook forces X11. Keep explicit user overrides and GTK4 Wayland.
     hook = appdir / "apprun-hooks/linuxdeploy-plugin-gtk.sh"
     lines = hook.read_text().splitlines()
     lines = ['export GDK_BACKEND="${GDK_BACKEND:-wayland,x11}"'
              if line.startswith("export GDK_BACKEND=") else line for line in lines]
+    lines.extend([
+        'export GDK_PIXBUF_MODULEDIR="$APPDIR/usr/lib/gdk-pixbuf-2.0/2.10.0/loaders"',
+        'export LD_LIBRARY_PATH="$APPDIR/usr/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"',
+    ])
     hook.write_text("\n".join(lines) + "\n")
     sanitize_loader_cache(appdir)
     drop_generated_graphics_loaders(appdir)
