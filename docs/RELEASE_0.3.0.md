@@ -45,6 +45,24 @@ flatpak run io.github.chromiator.Chromiator
 The GitHub release includes the matching source, license notices, and SHA-256
 checksums alongside the Linux packages.
 
+## Package verification
+
+Both release bundles passed the six package audit routes in an isolated
+private-Sway session: shell, Voronoi, presets, picker, I/O, and responsive
+layout. The package logs had no warnings, GTK criticals, panics, or other
+stderr output. Inspected AppImage and Flatpak captures show the square canvas
+corners and populated six-site inspector.
+
+The AppImage passed both AppDir and extracted-package ELF audits: 119 ELF files,
+zero audit errors, and a GLIBC 2.41 ceiling. These package checks do not certify
+GNOME/Mutter, a clean Debian desktop, every Linux distribution, or full
+assistive-technology behavior.
+
+| Package | Size | SHA-256 |
+| --- | ---: | --- |
+| `Chromiator-0.3.0-x86_64.AppImage` | 29,608,440 bytes | `d885280be5a8865ae0233f5b48828542adcd3244ac10bb83da0de8cc738572a7` |
+| `Chromiator-0.3.0-x86_64.flatpak` | 3,332,168 bytes | `61d0ddd54174df564063f2782d1e4492e166c96cfa9264ca4c62890c655dfb1e` |
+
 ## Compatibility
 
 This pre-alpha version reads project format v6 and preset JSON v3. Earlier

@@ -5,8 +5,12 @@
 The user accepted the current implemented GTK4/Voronoi work on 2026-10-07.
 Automated verification is documented below, with its environment and coverage
 limits. This acceptance does not certify untested desktop or assistive-technology
-configurations, or substitute for the pending 0.3.0 package checks. The follow-up
-fixes passed application builds, strict Clippy, and focused tests. Private-Sway
+configurations. The exact 0.3.0 AppImage and Flatpak packages passed six
+package-specific private-Sway routes each; both AppImage ELF audits also passed.
+Hashes and the complete bounded package evidence are in `DISTRIBUTION.md`.
+These results do not certify a clean-Debian desktop, GNOME/Mutter, or full
+assistive-technology behavior. The follow-up fixes passed application builds,
+strict Clippy, and focused tests. Private-Sway
 checks verified save/history/picker and the integrated workflow. The isolated
 GNOME/Mutter run verified THR-065 maximize/restore, portal open/cancel, and PNG8
 export/source/project readback; it did not repeat the full preset/edit/reopen

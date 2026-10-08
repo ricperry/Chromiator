@@ -344,7 +344,7 @@ screenshot request failed, so GNOME visual acceptance remains pending.
   evidence. GUI and workflow coverage was not accepted and remains open; THR-070
   stays `in-progress`.
 
-- [ ] **THR-071** — `verified; human acceptance pending` · P0 · Distribution/runtime — Establish a reproducible
+- [ ] **THR-071** — `v0.3.0 package checks complete; broader environment certification remains open` · P0 · Distribution/runtime — Establish a reproducible
   x86_64 package on a pinned build environment for the proposed Debian 13 /
   glibc 2.41 minimum and current Fedora 44 native Wayland. Audit the complete
   AppImage ELF/helper closure and host Fontconfig, HarfBuzz, and glycin
@@ -525,6 +525,24 @@ screenshot request failed, so GNOME visual acceptance remains pending.
   clean-Debian project workflows; their results remain historical to that
   earlier source. Human desktop review and user acceptance remain pending;
   see `docs/DISTRIBUTION.md` for exact artifacts.
+
+  Current v0.3.0 package results (2026-10-07): the x86_64 AppImage is
+  `target/distribution/0.3.0-8xyav9nb/appimage/output/Chromiator-0.3.0-x86_64.AppImage`,
+  29,608,440 bytes, SHA-256
+  `d885280be5a8865ae0233f5b48828542adcd3244ac10bb83da0de8cc738572a7`.
+  Its AppDir and extracted-package audits each pass with 119 ELF files, zero
+  errors, and GLIBC requirements within the 2.41 ceiling. The x86_64 Flatpak is
+  `target/distribution/0.3.0-0y94c7xc/flatpak/Chromiator-0.3.0-x86_64.flatpak`,
+  3,332,168 bytes, SHA-256
+  `61d0ddd54174df564063f2782d1e4492e166c96cfa9264ca4c62890c655dfb1e`.
+  Each exact bundle passed all six private-Sway audit routes: shell, Voronoi,
+  presets, picker, I/O, and responsive. Both logs had empty stderr with no
+  warning, GTK critical, or panic. Parent-inspected captures
+  `target/validation/release-0.3.0/appimage-example.png` and
+  `flatpak-example.png` show the square canvas corners and six-site inspector.
+  These package checks are complete. They do not certify a clean-Debian desktop,
+  GNOME/Mutter, or full assistive-technology behavior; keep those limits
+  explicit in release claims. See `docs/DISTRIBUTION.md` for snapshot evidence.
 
 - [ ] **THR-072** — `open` · P1 · Editing workflow proposal — After THR-070 and
   THR-071 review, observe small-palette remapping, Target edits, independent

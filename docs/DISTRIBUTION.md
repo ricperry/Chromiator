@@ -2,17 +2,37 @@
 
 ## Current 0.3.0 checkpoint (2026-10-07)
 
-The 0.3.0 pre-alpha GitHub release targets x86_64 AppImage and Flatpak bundles.
-The user accepted the current implemented application work on 2026-10-07;
-distribution acceptance remains separate from that product decision. Final
-0.3.0 build, package, and runtime results are to be recorded here before
-publication. The 0.2.0 artifact paths, hashes, and workflow evidence below are
-historical and do not transfer to rebuilt 0.3.0 packages.
+The 0.3.0 pre-alpha x86_64 AppImage and Flatpak builds and their bounded package
+checks are complete. The user accepted the current implemented application
+work on 2026-10-07. These candidate-specific results are ready for publication;
+they do not certify every desktop environment. The 0.2.0 artifact paths, hashes,
+and workflow evidence below are historical and do not transfer to rebuilt 0.3.0
+packages.
 
-Both build snapshots now include only
+| Bundle | Artifact | Size | SHA-256 |
+| --- | --- | ---: | --- |
+| AppImage | `target/distribution/0.3.0-8xyav9nb/appimage/output/Chromiator-0.3.0-x86_64.AppImage` | 29,608,440 bytes | `d885280be5a8865ae0233f5b48828542adcd3244ac10bb83da0de8cc738572a7` |
+| Flatpak | `target/distribution/0.3.0-0y94c7xc/flatpak/Chromiator-0.3.0-x86_64.flatpak` | 3,332,168 bytes | `61d0ddd54174df564063f2782d1e4492e166c96cfa9264ca4c62890c655dfb1e` |
+
+Each exact package passed all six private-Sway audit routes: shell, Voronoi,
+presets, picker, I/O, and responsive layout. Both package logs had empty stderr,
+with no warnings, GTK criticals, or panics. The inspected package captures at
+`target/validation/release-0.3.0/appimage-example.png` and
+`target/validation/release-0.3.0/flatpak-example.png` show square canvas corners
+and the populated six-site inspector. The AppImage AppDir and extracted-payload
+audits each reported 119 ELF files, zero errors, and GLIBC requirements within
+the 2.41 ceiling.
+
+The build source snapshots contained 68 AppImage inputs and 66 Flatpak inputs;
+their captured files matched the corresponding current `main` inputs, including
+the 0.3.0 Cargo package metadata. Both snapshots included only
 `assets/examples/SpectrumBreakpoint.png` from the artwork directory. Loose
-artwork, editable `.kra` files, personal projects, and other local assets are
-excluded from AppImage and Flatpak source snapshots.
+artwork, editable `.kra` files, personal projects, and other local assets were
+excluded. The private test session was stopped after inspection.
+
+These results are bounded to the exact packages and private-Sway routes listed
+here. They do not establish a clean-Debian desktop workflow, human GNOME/Mutter
+review, or full assistive-technology acceptance.
 
 The [0.2.0 Linux preview](https://github.com/ricperry/Chromiator/releases/tag/v0.2.0)
 was published from checkpoint `7f7f7353ff315c73636e5e3afc7a82ac9e7a37be`.
